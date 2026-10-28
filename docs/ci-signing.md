@@ -47,7 +47,9 @@ Constrain verification to the signer accepted by your trust policy:
 ```
 
 For stronger workflow and ref constraints, use a signed trust policy with a GitHub
-publisher:
+publisher. Public Sigstore GitHub certificates commonly expose repository, workflow, and
+ref claims; RHTAS 1.5 `github-workflow` certificates encode those values in the identity
+SAN instead.
 
 ```json
 {

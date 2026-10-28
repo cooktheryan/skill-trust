@@ -7,9 +7,7 @@
     {
       "name": "rhtas-github-actions",
       "issuer": "https://token.actions.githubusercontent.com",
-      "repository": "cooktheryan/skill-trust",
-      "workflow": ".github/workflows/rhtas-ci.yml",
-      "ref_pattern": "refs/heads/main"
+      "identity": "https://github.com/cooktheryan/skill-trust/.github/workflows/rhtas-ci.yml@refs/heads/main"
     }
   ],
   "blocklist": {

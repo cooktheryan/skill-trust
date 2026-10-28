@@ -140,12 +140,15 @@ The repository contains a signed policy for a small demo skill:
 - `trust-policy.json.keyed.json`
 - `trust/rhtas/policy-key.pub`
 
-The policy trusts GitHub Actions signatures only when the certificate claims match:
+The policy trusts GitHub Actions signatures only when both values match:
 
 - Issuer: `https://token.actions.githubusercontent.com`
-- Repository: `cooktheryan/skill-trust`
-- Workflow: `.github/workflows/rhtas-ci.yml`
-- Ref: `refs/heads/main`
+- Identity SAN: `https://github.com/cooktheryan/skill-trust/.github/workflows/rhtas-ci.yml@refs/heads/main`
+
+RHTAS 1.5 encodes the repository, workflow, and ref in the certificate subject alternative
+name for `github-workflow` identities. Public Sigstore GitHub certificates may instead expose
+repository, workflow, and ref as certificate extensions; use the claim-based policy fields
+when those extensions are present.
 
 The public anchor key is committed. The corresponding private key is not committed and
 must be stored securely. To rotate the anchor, generate a new key, update the policy, sign
@@ -204,9 +207,7 @@ skill-trust trust init \
   --key .skill-trust/policy-key.pem \
   --publisher-name rhtas-github-actions \
   --oidc-issuer https://token.actions.githubusercontent.com \
-  --repository cooktheryan/skill-trust \
-  --workflow .github/workflows/sign.yml \
-  --ref-pattern refs/heads/main
+  --identity https://github.com/cooktheryan/skill-trust/.github/workflows/sign.yml@refs/heads/main
 ```
 
 Sign and verify policy-covered files from CI:
@@ -264,8 +265,8 @@ resolve it.
 ### GitHub OIDC is rejected
 
 Confirm that Fulcio contains both the GitHub `issuer` and matching `issuerURL`, the
-workflow has `id-token: write`, and the trust policy matches the exact repository,
-workflow path, and ref.
+workflow has `id-token: write`, and the trust policy matches the exact RHTAS certificate
+identity SAN.
 
 ### Verification cannot reach RHTAS
 
