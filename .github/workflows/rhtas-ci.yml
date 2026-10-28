@@ -35,6 +35,14 @@ jobs:
             --tuf-url "$TUF_URL" \
             --tuf-root trust/rhtas/root.json
 
+      - name: Upload signed demo skill
+        uses: actions/upload-artifact@v4
+        with:
+          name: rhtas-signed-demo-skill
+          path: examples/rhtas-demo-plugin
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Verify demo skill against RHTAS trust policy
         run: |
           python - <<'PY'
