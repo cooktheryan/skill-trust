@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
@@ -37,11 +38,8 @@ def generate_key_pair(private_key_path: Path) -> tuple[Path, Path]:
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
 
-    private_key_path.parent.mkdir(parents=True, exist_ok=True)
-    private_key_path.write_bytes(private_pem)
-    public_key_path.write_bytes(public_pem)
-    os.chmod(private_key_path, 0o600)
-    os.chmod(public_key_path, 0o600)
+    _atomic_write_bytes(private_key_path, private_pem, mode=0o600)
+    _atomic_write_bytes(public_key_path, public_pem, mode=0o600)
     return private_key_path, public_key_path
 
 
@@ -49,6 +47,8 @@ def load_private_key(path: Path) -> ec.EllipticCurvePrivateKey:
     key = load_pem_private_key(Path(path).read_bytes(), password=None)
     if not isinstance(key, ec.EllipticCurvePrivateKey):
         raise ValueError(f"Expected an EC private key: {path}")
+    if key.curve.name != "secp256r1":
+        raise ValueError(f"Expected an EC P-256 private key: {path}")
     return key
 
 
@@ -56,6 +56,8 @@ def load_public_key(path: Path) -> ec.EllipticCurvePublicKey:
     key = load_pem_public_key(Path(path).read_bytes())
     if not isinstance(key, ec.EllipticCurvePublicKey):
         raise ValueError(f"Expected an EC public key: {path}")
+    if key.curve.name != "secp256r1":
+        raise ValueError(f"Expected an EC P-256 public key: {path}")
     return key
 
 
@@ -75,6 +77,8 @@ def decode_public_key(encoded: str) -> ec.EllipticCurvePublicKey:
     loaded = serialization.load_der_public_key(der)
     if not isinstance(loaded, ec.EllipticCurvePublicKey):
         raise ValueError("Expected an EC public key")
+    if loaded.curve.name != "secp256r1":
+        raise ValueError("Expected an EC P-256 public key")
     return loaded
 
 
@@ -127,7 +131,7 @@ def write_policy_signature(
         "keyId": key_id(private_key.public_key()),
         "signature": sign_bytes(private_key, payload),
     }
-    Path(output_path).write_text(json.dumps(sidecar, indent=2) + "\n")
+    _atomic_write_text(output_path, json.dumps(sidecar, indent=2) + "\n")
     return Path(output_path)
 
 
@@ -154,9 +158,61 @@ def verify_policy_signature(
     except (ValueError, TypeError) as error:
         return False, f"Invalid policy public key: {error}"
 
-    if trusted_public_keys is not None and encoded_key not in trusted_public_keys:
+    canonical_trusted_keys = None
+    if trusted_public_keys is not None:
+        canonical_trusted_keys = []
+        for trusted_key in trusted_public_keys:
+            if not isinstance(trusted_key, str):
+                return False, "Trusted policy public keys must be strings"
+            try:
+                canonical_trusted_keys.append(encode_public_key(decode_public_key(trusted_key)))
+            except (ValueError, TypeError) as error:
+                return False, f"Invalid trusted policy public key: {error}"
+        encoded_key = encode_public_key(public_key)
+
+    if canonical_trusted_keys is not None and encoded_key not in canonical_trusted_keys:
         return False, "Policy signer is not a trusted anchor"
 
-    if not verify_bytes(public_key, policy_path.read_bytes(), signature):
+    try:
+        policy_bytes = policy_path.read_bytes()
+    except OSError as error:
+        return False, f"Unable to read policy: {error}"
+    if not verify_bytes(public_key, policy_bytes, signature):
         return False, "Policy signature is invalid"
     return True, key_id(public_key)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    _atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def _atomic_write_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor: int | None = None
+    temporary_path: Path | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            dir=path.parent,
+        )
+        temporary_path = Path(temporary_name)
+        os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "wb") as temporary_file:
+            descriptor = None
+            temporary_file.write(data)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, path)
+    except BaseException:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise

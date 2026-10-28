@@ -92,7 +92,7 @@ def main() -> None:
         # ── Verify all skills ─────────────────────────────────────
         print(f"\n3. Verifying all skills...")
 
-        verifier = SkillVerifier(staging=True)
+        verifier = SkillVerifier(staging=True, allow_unconstrained_identity=True)
         verify_results = verifier.verify_plugin(plugin_root)
 
         all_ok = True

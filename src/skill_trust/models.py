@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+import re
+
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -19,7 +22,16 @@ class FileEntry:
 
     @classmethod
     def from_dict(cls, data: dict) -> FileEntry:
-        return cls(path=data["path"], sha256=data["sha256"])
+        if not isinstance(data, dict):
+            raise ValueError("Manifest file entry must be an object")
+        path = data["path"]
+        if not isinstance(path, str) or not path:
+            raise ValueError("Manifest file path must be a non-empty string")
+        _validate_manifest_path(path)
+        sha256 = data["sha256"]
+        if not isinstance(sha256, str) or not _SHA256_PATTERN.fullmatch(sha256):
+            raise ValueError(f"Invalid SHA-256 digest for manifest path: {path!r}")
+        return cls(path=path, sha256=sha256)
 
 
 @dataclass(frozen=True)
@@ -52,10 +64,26 @@ class Manifest:
 
     @classmethod
     def from_dict(cls, data: dict) -> Manifest:
-        files = tuple(FileEntry.from_dict(f) for f in data["files"])
-        for f in files:
-            if ".." in f.path.split("/"):
-                raise ValueError(f"File path contains traversal component: {f.path}")
+        if not isinstance(data, dict):
+            raise ValueError("Manifest must be an object")
+        raw_files = data.get("files")
+        if not isinstance(raw_files, list):
+            raise ValueError("Manifest files must be a list")
+        files = tuple(FileEntry.from_dict(f) for f in raw_files)
+        paths = [entry.path for entry in files]
+        if len(paths) != len(set(paths)):
+            raise ValueError("Manifest contains duplicate file paths")
+        for field_name in ("version", "skill_name", "root", "root_digest"):
+            if not isinstance(data.get(field_name), str) or not data[field_name]:
+                raise ValueError(f"Manifest {field_name} must be a non-empty string")
+        hash_algorithm = data.get("hash_algorithm", "sha256")
+        if hash_algorithm != "sha256":
+            raise ValueError(f"Unsupported manifest hash algorithm: {hash_algorithm}")
+        if not isinstance(data.get("created_at"), str) or not data["created_at"]:
+            raise ValueError("Manifest created_at must be a non-empty string")
+        root_digest = data["root_digest"]
+        if not isinstance(root_digest, str) or not _SHA256_PATTERN.fullmatch(root_digest):
+            raise ValueError("Invalid manifest root digest")
         return cls(
             version=data["version"],
             skill_name=data["skill_name"],
@@ -74,10 +102,13 @@ class Manifest:
         """
         discrepancies: list[str] = []
 
-        if self.skill_name != other.skill_name:
-            discrepancies.append(
-                f"skill_name mismatch: expected '{self.skill_name}', got '{other.skill_name}'"
-            )
+        for field_name in ("version", "skill_name", "root", "root_digest", "hash_algorithm"):
+            expected = getattr(self, field_name)
+            actual = getattr(other, field_name)
+            if expected != actual:
+                discrepancies.append(
+                    f"{field_name} mismatch: expected '{expected}', got '{actual}'"
+                )
 
         self_files = {f.path: f.sha256 for f in self.files}
         other_files = {f.path: f.sha256 for f in other.files}
@@ -93,6 +124,16 @@ class Manifest:
                 discrepancies.append(f"modified: {path}")
 
         return discrepancies
+
+
+def _validate_manifest_path(path: str) -> None:
+    if "\\" in path or "\x00" in path:
+        raise ValueError(f"Manifest path contains an invalid character: {path!r}")
+    parts = path.split("/")
+    if path.startswith("/") or any(part in ("", ".", "..") for part in parts):
+        raise ValueError(
+            f"Manifest path contains a traversal component or is not canonical: {path!r}"
+        )
 
 
 @dataclass(frozen=True)

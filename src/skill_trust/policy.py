@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import re
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Literal
 
 POLICY_PREDICATE = "https://skill-trust.dev/policy/v1"
@@ -57,6 +58,8 @@ class Publisher:
     def matches(self, *, identity: str | None, issuer: str | None, claims: dict | None, public_key: str | None) -> bool:
         claims = claims or {}
         if self.key_id is not None:
+            if self.public_key is None:
+                return False
             signer_key_id = claims.get("key_id")
             if self.key_id != signer_key_id:
                 return False
@@ -164,7 +167,10 @@ class TrustPolicy:
             for publisher in self.blocked_publishers
         )
     def matches_path(self, relative_path: str) -> bool:
-        return any(PurePosixPath(relative_path).match(pattern) for pattern in self.includes)
+        return any(
+            re.fullmatch(_glob_to_regex(pattern), relative_path)
+            for pattern in self.includes
+        )
 
     def is_identity_trusted(self, identity: str | None) -> bool:
         identities = {
@@ -185,14 +191,22 @@ class TrustPolicy:
         includes = _string_list(data, "includes")
         publishers_data = data.get("publishers", [])
         blocklist = data.get("blocklist", {})
+        if not isinstance(blocklist, dict):
+            raise ValueError("blocklist must be an object")
         blocked_data = blocklist.get("digests", [])
         blocked_publisher_data = blocklist.get("publishers", [])
         if not isinstance(publishers_data, list):
             raise ValueError("publishers must be a list")
+        if not all(isinstance(publisher, dict) for publisher in publishers_data):
+            raise ValueError("publishers must contain objects")
         if not isinstance(blocked_data, list):
             raise ValueError("blocklist.digests must be a list")
+        if not all(isinstance(digest, (dict, str)) for digest in blocked_data):
+            raise ValueError("blocklist.digests must contain objects or strings")
         if not isinstance(blocked_publisher_data, list):
             raise ValueError("blocklist.publishers must be a list")
+        if not all(isinstance(publisher, dict) for publisher in blocked_publisher_data):
+            raise ValueError("blocklist.publishers must contain objects")
 
         publishers = [Publisher.from_dict(item) for item in publishers_data]
         legacy_identities = _optional_string_list(data, "trusted_identities")
@@ -240,6 +254,7 @@ class TrustPolicy:
                 ],
             },
             "enforcement": self.enforcement,
+            "require_signature": self.require_signature,
         }
     def compose(self, other: TrustPolicy) -> TrustPolicy:
         """Compose policies; neither side can weaken the result."""
@@ -260,6 +275,23 @@ def _string_list(data: dict, key: str) -> list[str]:
     if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
         raise ValueError(f"{key} must be a list of strings")
     return values
+
+
+def _glob_to_regex(pattern: str) -> str:
+    parts = pattern.split("/")
+    expression = ""
+    for index, part in enumerate(parts):
+        is_last = index == len(parts) - 1
+        if part == "**":
+            expression += "[^/]+(?:/[^/]+)*" if is_last else "(?:[^/]+/)*"
+            continue
+        segment = fnmatch.translate(part)
+        if segment.endswith("\\Z"):
+            segment = segment[:-2]
+        expression += segment
+        if not is_last:
+            expression += "/"
+    return expression
 
 
 def _optional_string_list(data: dict, key: str) -> list[str]:

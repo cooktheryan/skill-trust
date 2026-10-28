@@ -31,7 +31,7 @@ class TestSigstoreStagingSignVerify:
         assert len(result.manifest.files) == 2
 
         # Verify (no identity constraints — accepts any signer)
-        verifier = SkillVerifier(staging=True)
+        verifier = SkillVerifier(staging=True, allow_unconstrained_identity=True)
         verify_result = verifier.verify_skill(tmp_skill, result.bundle_path)
 
         assert verify_result.verified
@@ -47,7 +47,7 @@ class TestSigstoreStagingSignVerify:
         (tmp_skill / "SKILL.md").write_text("TAMPERED CONTENT")
 
         # Verify should fail
-        verifier = SkillVerifier(staging=True)
+        verifier = SkillVerifier(staging=True, allow_unconstrained_identity=True)
         verify_result = verifier.verify_skill(tmp_skill, result.bundle_path)
 
         assert not verify_result.verified
@@ -73,7 +73,7 @@ class TestSigstoreStagingSignVerify:
         assert len(results) == 2
 
         # Verify all
-        verifier = SkillVerifier(staging=True)
+        verifier = SkillVerifier(staging=True, allow_unconstrained_identity=True)
         verify_results = verifier.verify_plugin(plugin_root)
 
         assert len(verify_results) == 2

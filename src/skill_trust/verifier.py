@@ -20,6 +20,8 @@ from skill_trust.models import IdentityConstraints, Manifest, VerificationResult
 
 logger = logging.getLogger(__name__)
 _IN_TOTO_PAYLOAD_TYPE = "application/vnd.in-toto+json"
+_IN_TOTO_STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
+_SKILL_PREDICATE_TYPE = "https://skill-trust.dev/skill/v1"
 
 
 class SkillVerifier:
@@ -33,6 +35,7 @@ class SkillVerifier:
         staging: bool = False,
         tuf_url: str | None = None,
         tuf_root: Path | None = None,
+        allow_unconstrained_identity: bool = False,
     ) -> None:
         if staging and tuf_url:
             raise ValueError("--staging and a custom TUF URL cannot be combined")
@@ -44,6 +47,7 @@ class SkillVerifier:
         self._staging = staging
         self._tuf_url = tuf_url
         self._tuf_root = tuf_root
+        self._allow_unconstrained_identity = allow_unconstrained_identity
         self._verifier: Verifier | None = None
 
     def _keyless_verifier(self) -> Verifier:
@@ -85,6 +89,11 @@ class SkillVerifier:
             "No cryptographic identity constraints provided. The caller must apply "
             "publisher policy after verification."
         )
+        if not self._allow_unconstrained_identity:
+            raise ValueError(
+                "Keyless verification requires identity constraints or explicit "
+                "allow_unconstrained_identity=True"
+            )
         return UnsafeNoOp()
 
     def verify_skill(self, skill_path: Path, bundle_path: Path) -> VerificationResult:
@@ -106,16 +115,29 @@ class SkillVerifier:
             return self._verify_keyed_skill(skill_path, bundle_data)
         return self._verify_keyless_skill(skill_path, bundle_text)
 
-    def verify_file(self, file_path: Path, bundle_path: Path) -> VerificationResult:
+    def verify_file(
+        self,
+        file_path: Path,
+        bundle_path: Path,
+        *,
+        data: bytes | None = None,
+        bundle_bytes: bytes | None = None,
+    ) -> VerificationResult:
         file_path = Path(file_path).resolve()
         bundle_path = Path(bundle_path).resolve()
         try:
-            data = file_path.read_bytes()
-            bundle_text = bundle_path.read_text()
+            data = file_path.read_bytes() if data is None else data
+            bundle_text = (
+                bundle_bytes.decode("utf-8")
+                if bundle_bytes is not None
+                else bundle_path.read_text()
+            )
         except FileNotFoundError as error:
             return VerificationResult(verified=False, error=f"File or bundle not found: {error}")
         except PermissionError as error:
             return VerificationResult(verified=False, error=f"Permission denied: {error}")
+        except UnicodeError as error:
+            return VerificationResult(verified=False, error=f"Invalid bundle encoding: {error}")
 
         try:
             bundle_data = json.loads(bundle_text)
@@ -164,6 +186,7 @@ class SkillVerifier:
             statement_data = json.loads(payload)
             if envelope._inner.payload_type != _IN_TOTO_PAYLOAD_TYPE:
                 raise ValueError("unexpected DSSE payload type")
+            _validate_skill_statement(statement_data)
             signed_manifest = Manifest.from_dict(statement_data["predicate"])
         except Exception as error:
             return VerificationResult(verified=False, error=f"Signature verification failed: {error}")
@@ -187,6 +210,7 @@ class SkillVerifier:
             if _payload_type != _IN_TOTO_PAYLOAD_TYPE:
                 raise ValueError("unexpected DSSE payload type")
             statement_data = json.loads(payload)
+            _validate_skill_statement(statement_data)
             signed_manifest = Manifest.from_dict(statement_data["predicate"])
         except Exception as error:
             return VerificationResult(verified=False, error=f"Signature verification failed: {error}")
@@ -263,3 +287,27 @@ class SkillVerifier:
                 continue
             results[skill_dir.name] = self.verify_skill(skill_dir, bundle_path)
         return results
+
+
+def _validate_skill_statement(statement_data: dict) -> None:
+    if statement_data.get("_type") != _IN_TOTO_STATEMENT_TYPE:
+        raise ValueError("unexpected in-toto statement type")
+    if statement_data.get("predicateType") != _SKILL_PREDICATE_TYPE:
+        raise ValueError("unexpected skill predicate type")
+    subjects = statement_data.get("subject")
+    if not isinstance(subjects, list) or len(subjects) != 1:
+        raise ValueError("skill statement must contain exactly one subject")
+    subject = subjects[0]
+    if not isinstance(subject, dict):
+        raise ValueError("invalid skill statement subject")
+    digest = subject.get("digest")
+    if not isinstance(digest, dict):
+        raise ValueError("invalid skill statement subject digest")
+    manifest = statement_data.get("predicate")
+    if not isinstance(manifest, dict):
+        raise ValueError("invalid skill manifest predicate")
+    subject_digest = digest.get("sha256")
+    if subject_digest != manifest.get("root_digest"):
+        raise ValueError("skill subject digest does not match manifest")
+    if subject.get("name") != manifest.get("skill_name"):
+        raise ValueError("skill subject name does not match manifest")

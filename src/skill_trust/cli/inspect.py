@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import click
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
 from skill_trust.cli import cli
 
@@ -49,7 +49,7 @@ def _inspect_bundle(bundle_path: Path) -> None:
 
     try:
         bundle = Bundle.from_json(bundle_path.read_text())
-    except (json.JSONDecodeError, ValueError) as e:
+    except (OSError, UnicodeError, ValueError, TypeError) as e:
         console.print(f"[red]Error:[/red] Invalid bundle format in {bundle_path.name}: {e}")
         return
 
@@ -58,7 +58,11 @@ def _inspect_bundle(bundle_path: Path) -> None:
         console.print(f"[red]Error:[/red] No signing certificate in {bundle_path.name}")
         return
 
-    identity_info = extract_identity(cert)
+    try:
+        identity_info = extract_identity(cert)
+    except (ValueError, TypeError, UnicodeError) as e:
+        console.print(f"[red]Error:[/red] Invalid signing certificate in {bundle_path.name}: {e}")
+        return
 
     skill_name = bundle_path.stem.replace(".sigstore", "")
 
@@ -67,17 +71,17 @@ def _inspect_bundle(bundle_path: Path) -> None:
     table.add_column("Value")
 
     table.add_row("Bundle", str(bundle_path.name))
-    table.add_row("Identity", identity_info.get("identity") or "unknown")
-    table.add_row("Issuer", identity_info.get("issuer") or "unknown")
+    table.add_row("Identity", Text(identity_info.get("identity") or "unknown"))
+    table.add_row("Issuer", Text(identity_info.get("issuer") or "unknown"))
     table.add_row("Not Before", str(cert.not_valid_before_utc))
     table.add_row("Not After", str(cert.not_valid_after_utc))
 
     if identity_info.get("github_workflow_repository"):
-        table.add_row("Repository", identity_info["github_workflow_repository"])
+        table.add_row("Repository", Text(identity_info["github_workflow_repository"]))
     if identity_info.get("github_workflow_name"):
-        table.add_row("Workflow", identity_info["github_workflow_name"])
+        table.add_row("Workflow", Text(identity_info["github_workflow_name"]))
     if identity_info.get("github_workflow_ref"):
-        table.add_row("Ref", identity_info["github_workflow_ref"])
+        table.add_row("Ref", Text(identity_info["github_workflow_ref"]))
 
     log_entry = bundle.log_entry
     if log_entry:

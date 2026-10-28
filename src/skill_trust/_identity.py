@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from cryptography import x509
-from cryptography.x509.oid import ExtensionOID
 
 # Sigstore-specific OIDs for certificate extensions
 _SIGSTORE_OIDC_ISSUER = x509.ObjectIdentifier("1.3.6.1.4.1.57264.1.1")

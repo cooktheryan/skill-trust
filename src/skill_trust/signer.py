@@ -27,6 +27,7 @@ from sigstore.sign import SigningContext
 from skill_trust.manifest import build_manifest
 from skill_trust.keyed import (
     KEYED_BUNDLE_MEDIA_TYPE,
+    _atomic_write_bytes,
     encode_public_key,
     key_id,
     load_private_key,
@@ -209,7 +210,7 @@ def generate_ec_test_key(output_path: Path) -> Path:
         format=PrivateFormat.PKCS8,
         encryption_algorithm=NoEncryption(),
     )
-    output_path.write_bytes(pem)
+    _atomic_write_bytes(output_path, pem, mode=0o600)
     return output_path
 
 
@@ -239,6 +240,8 @@ def _write_bundle(
     output_dir: Path | None,
 ) -> Path:
     """Write a sigstore bundle to disk."""
+    if Path(skill_name).name != skill_name or skill_name in ("", ".", ".."):
+        raise ValueError(f"Invalid skill name for bundle output: {skill_name!r}")
     if output_dir is None:
         output_dir = skill_path.parent.parent / ".skill-trust" / "skills"
 

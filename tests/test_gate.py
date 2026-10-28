@@ -77,6 +77,30 @@ class TestTrustPolicy:
         assert policy.is_identity_trusted("dev@example.com")
         assert d["enforcement"] == "deny"
 
+    def test_require_signature_round_trips(self) -> None:
+        policy = TrustPolicy(require_signature=False)
+        assert TrustPolicy.from_dict(policy.to_dict()).require_signature is False
+
+    def test_keyed_publisher_requires_public_key(self) -> None:
+        policy = TrustPolicy.from_dict({"publishers": [{"key_id": "trusted-id"}]})
+        assert not policy.is_publisher_trusted(
+            identity=None,
+            issuer=None,
+            claims={"key_id": "trusted-id"},
+            public_key="any-key",
+        )
+
+    def test_recursive_glob_includes_direct_and_nested_files(self) -> None:
+        policy = TrustPolicy.from_dict({"includes": ["src/**/*.py"]})
+        assert policy.matches_path("src/main.py")
+        assert policy.matches_path("src/package/main.py")
+        assert not policy.matches_path("tests/main.py")
+
+    def test_recursive_glob_includes_root_files(self) -> None:
+        policy = TrustPolicy.from_dict({"includes": ["**/*.py"]})
+        assert policy.matches_path("main.py")
+        assert policy.matches_path("package/main.py")
+
 
 class TestGate:
     def test_no_signature_required_allows(self, tmp_skill: Path) -> None:

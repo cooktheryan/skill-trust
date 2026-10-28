@@ -86,6 +86,13 @@ def verify_before_load(
     skill_path = Path(skill_path).resolve()
     plugin_root = Path(plugin_root).resolve()
     skill_name = skill_path.name
+    if not skill_path.is_relative_to(plugin_root):
+        return _make_result(
+            False,
+            skill_name,
+            "Skill path is outside the plugin root",
+            policy,
+        )
 
     # Check for signature bundle
     bundle_path = plugin_root / ".skill-trust" / "skills" / f"{skill_name}.sigstore.json"
@@ -107,6 +114,7 @@ def verify_before_load(
         staging=staging,
         tuf_url=tuf_url,
         tuf_root=tuf_root,
+        allow_unconstrained_identity=True,
     )
     result = verifier.verify_skill(skill_path, bundle_path)
 

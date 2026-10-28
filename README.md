@@ -45,6 +45,11 @@ skill-trust verify path/to/skills/my-skill/
 # Verify all skills in a plugin
 skill-trust verify path/to/my-plugin/
 
+Keyless Sigstore verification fails closed unless identity constraints are supplied:
+pass `--identity` and `--issuer` (or use a signed trust policy). Keyed bundles can be
+verified directly because the bundle carries the public key that must authenticate the
+signature.
+
 # Verify with identity constraints
 skill-trust verify path/to/my-plugin/ \
   --identity developer@example.com \
@@ -138,7 +143,11 @@ Programmatic callers can use:
 from skill_trust.scan import preexec_verify
 from skill_trust.verifier import SkillVerifier
 
-report = preexec_verify(project_root, policy, SkillVerifier())
+report = preexec_verify(
+    project_root,
+    policy,
+    SkillVerifier(allow_unconstrained_identity=True),
+)
 if not report.allowed:
     raise RuntimeError("trust scan failed")
 ```

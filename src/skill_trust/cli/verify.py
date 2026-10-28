@@ -72,7 +72,14 @@ def verify(
     if (path / "skills").is_dir():
         # Plugin root — verify all skills
         console.print(f"[bold]Verifying all skills in plugin:[/bold] {path}")
-        results = verifier.verify_plugin(path)
+        try:
+            results = verifier.verify_plugin(path)
+        except ValueError as error:
+            console.print(f"[bold red]Verification failed:[/bold red] {error}")
+            sys.exit(1)
+        if not results:
+            console.print("[bold red]No skills found in plugin.[/bold red]")
+            sys.exit(1)
 
         all_ok = True
         for name, result in results.items():
@@ -102,7 +109,11 @@ def verify(
             console.print(f"  Expected: {bundle_path}")
             sys.exit(1)
 
-        result = verifier.verify_skill(path, bundle_path)
+        try:
+            result = verifier.verify_skill(path, bundle_path)
+        except ValueError as error:
+            console.print(f"[red]\u2717[/red] {path.name}: {error}")
+            sys.exit(1)
 
         if result.verified:
             console.print(f"[green]\u2713[/green] {path.name} verified")

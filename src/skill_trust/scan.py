@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -67,6 +69,8 @@ def scan_project(
 ) -> ScanReport:
     """Scan files matching policy includes without respecting .gitignore."""
     root = Path(root).resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"Scan root not found or not a directory: {root}")
     results: list[FileTrustResult] = []
 
     for path in sorted(root.rglob("*")):
@@ -78,7 +82,19 @@ def scan_project(
         if not policy.matches_path(relative):
             continue
 
-        data = path.read_bytes()
+        try:
+            data = _read_regular_file_no_follow(path)
+        except OSError as error:
+            results.append(
+                FileTrustResult(
+                    path=path,
+                    relative_path=relative,
+                    digest="",
+                    status="blocked",
+                    reason=f"Unable to read file: {error}",
+                )
+            )
+            continue
         digest = hashlib.sha256(data).hexdigest()
         if policy.is_digest_blocked(digest):
             results.append(
@@ -116,7 +132,49 @@ def scan_project(
             )
             continue
 
-        verification = verifier.verify_file(path, bundle_path)
+        try:
+            bundle_bytes = _read_regular_file_no_follow(bundle_path)
+        except FileNotFoundError:
+            results.append(
+                FileTrustResult(
+                    path=path,
+                    relative_path=relative,
+                    digest=digest,
+                    status="unsigned",
+                    reason=f"No bundle found: {bundle_path.name}",
+                )
+            )
+            continue
+        except (OSError, ValueError) as error:
+            results.append(
+                FileTrustResult(
+                    path=path,
+                    relative_path=relative,
+                    digest=digest,
+                    status="blocked",
+                    reason=f"Signature bundle must be a regular, non-symlink file: {error}",
+                )
+            )
+            continue
+
+        try:
+            verification = verifier.verify_file(
+                path,
+                bundle_path,
+                data=data,
+                bundle_bytes=bundle_bytes,
+            )
+        except (OSError, ValueError, TypeError) as error:
+            results.append(
+                FileTrustResult(
+                    path=path,
+                    relative_path=relative,
+                    digest=digest,
+                    status="blocked",
+                    reason=f"Verification scan failed: {error}",
+                )
+            )
+            continue
         publisher_blocked = policy.is_publisher_blocked(
             identity=verification.identity,
             issuer=verification.issuer,
@@ -182,3 +240,21 @@ def _is_skipped(relative_path: str) -> bool:
     if any(part in _SKIP_DIRECTORIES for part in parts[:-1]):
         return True
     return relative_path in _POLICY_FILES
+
+
+def _read_regular_file_no_follow(path: Path) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"Not a regular file: {path}")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 8192)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)

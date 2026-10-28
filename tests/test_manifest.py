@@ -158,7 +158,8 @@ class TestManifestDiff:
         m2 = build_manifest(tmp_skill)
 
         diff = m1.diff(m2)
-        assert len(diff) == 3
+        assert len(diff) == 4
+        assert any("root_digest mismatch" in item for item in diff)
 
 
 class TestRootDigest:

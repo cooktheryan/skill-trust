@@ -1,9 +1,12 @@
 """Tests for Nono-compatible trust policy and keyed attestation features."""
 
 import json
+import os
 from pathlib import Path
 
 from click.testing import CliRunner
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 import pytest
 
 from skill_trust.cli import cli
@@ -11,6 +14,7 @@ from skill_trust.keyed import (
     encode_public_key,
     generate_key_pair,
     key_id,
+    load_private_key,
     load_public_key,
     verify_policy_signature,
     write_policy_signature,
@@ -164,7 +168,10 @@ def test_scan_blocks_publisher_even_in_warn_mode(tmp_path: Path) -> None:
             }
         ],
         "blocklist": {
-            "publishers": [{"key_id": key_id(load_public_key(public_key))}]
+                "publishers": [{
+                    "key_id": key_id(load_public_key(public_key)),
+                    "public_key": encoded_public_key,
+                }]
         },
         "enforcement": "warn",
     })
@@ -302,3 +309,52 @@ def test_cli_init_requires_issuer_for_oidc_constraints(tmp_path: Path) -> None:
         )
         assert result.exit_code != 0
         assert "OIDC publisher constraints require --oidc-issuer" in result.output
+
+
+def test_keyed_helpers_reject_non_p256_keys(tmp_path: Path) -> None:
+    private_key = ec.generate_private_key(ec.SECP384R1())
+    key_path = tmp_path / "p384.pem"
+    key_path.write_bytes(
+        private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+
+    with pytest.raises(ValueError, match="P-256"):
+        load_private_key(key_path)
+
+
+def test_policy_signature_reports_unreadable_policy(tmp_path: Path) -> None:
+    private_key, _ = _make_key(tmp_path)
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(json.dumps({"includes": ["*.txt"]}))
+    signature_path = write_policy_signature(policy_path, private_key)
+    policy_path.unlink()
+
+    valid, reason = verify_policy_signature(policy_path, signature_path)
+    assert not valid
+    assert "Unable to read policy" in reason
+
+
+def test_scan_rejects_symlinked_bundle(tmp_path: Path) -> None:
+    private_key, _ = _make_key(tmp_path)
+    target = tmp_path / "instructions.txt"
+    target.write_text("trusted content\n")
+    bundle_path = SkillSigner(private_key=private_key).sign_file(target)
+    external_bundle = tmp_path / "external.bundle"
+    os.replace(bundle_path, external_bundle)
+    bundle_path.symlink_to(external_bundle)
+
+    policy = TrustPolicy.from_dict({"includes": ["*.txt"], "publishers": []})
+    report = scan_project(tmp_path, policy, SkillVerifier())
+    assert not report.allowed
+    assert report.results[0].status == "blocked"
+    assert "non-symlink" in report.results[0].reason
+
+
+def test_keyless_verifier_fails_closed_without_constraints() -> None:
+    verifier = SkillVerifier()
+    with pytest.raises(ValueError, match="requires identity constraints"):
+        verifier._build_policy()

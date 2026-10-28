@@ -179,7 +179,12 @@ def verify(
 ) -> None:
     """Verify files against a signed, anchored trust policy."""
     effective_policy, trusted_keys = _load_verified_policy(policy, user_policy, trust_anchor)
-    verifier = SkillVerifier(staging=staging, tuf_url=tuf_url, tuf_root=tuf_root)
+    verifier = SkillVerifier(
+        staging=staging,
+        tuf_url=tuf_url,
+        tuf_root=tuf_root,
+        allow_unconstrained_identity=True,
+    )
     root = Path(".").resolve()
     if verify_all:
         report = scan_project(root, effective_policy, verifier)
@@ -190,14 +195,20 @@ def verify(
 
     if not paths:
         raise click.ClickException("Provide files or --all")
-    selected = set(paths)
+    selected = {path.resolve() for path in paths}
+    if any(not path.is_relative_to(root) for path in selected):
+        raise click.ClickException("All selected files must be inside the scan root")
     report = scan_project(root, effective_policy, verifier)
     selected_report = ScanReport(
         root=report.root,
-        results=tuple(result for result in report.results if result.path in selected),
+        results=tuple(
+            result for result in report.results if result.path.resolve() in selected
+        ),
         warnings=report.warnings,
         enforcement=report.enforcement,
     )
+    if len(selected_report.results) != len(selected):
+        raise click.ClickException("One or more selected files are not covered by the policy")
     _print_report(selected_report)
     if not selected_report.allowed:
         sys.exit(1)
@@ -210,7 +221,7 @@ def verify(
 def list_files(policy: Path, user_policy: Path | None, trust_anchor: Path | None) -> None:
     """List policy-covered files and their trust status."""
     effective_policy, _ = _load_verified_policy(policy, user_policy, trust_anchor)
-    verifier = SkillVerifier()
+    verifier = SkillVerifier(allow_unconstrained_identity=True)
     report = scan_project(Path(".").resolve(), effective_policy, verifier)
     _print_report(report)
 
