@@ -57,7 +57,7 @@ def test_verifier_uses_custom_tuf_repository(monkeypatch, tmp_path: Path) -> Non
         calls["bootstrap_root"] = bootstrap_root
         return trust_config
 
-    def verifier(trusted_root):
+    def verifier_factory(trusted_root):
         calls["trusted_root"] = trusted_root
         return object()
 
@@ -66,14 +66,15 @@ def test_verifier_uses_custom_tuf_repository(monkeypatch, tmp_path: Path) -> Non
         "from_tuf",
         classmethod(lambda cls, *args, **kwargs: from_tuf(*args, **kwargs)),
     )
-    monkeypatch.setattr(verifier_module, "Verifier", verifier)
+    monkeypatch.setattr(verifier_module, "Verifier", verifier_factory)
 
     bootstrap_root = tmp_path / "trusted_root.json"
     bootstrap_root.write_text("{}")
-    SkillVerifier(
+    skill_verifier = SkillVerifier(
         tuf_url="https://rhtas.example.com/tuf",
         tuf_root=bootstrap_root,
     )
+    skill_verifier._keyless_verifier()
 
     assert calls == {
         "url": "https://rhtas.example.com/tuf",

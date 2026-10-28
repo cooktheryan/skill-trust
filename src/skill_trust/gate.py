@@ -6,7 +6,6 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from skill_trust.models import IdentityConstraints
 from skill_trust.policy import TrustPolicy
 from skill_trust.verifier import SkillVerifier
 
@@ -39,7 +38,7 @@ def _make_result(
     issuer: str | None = None,
 ) -> GateResult:
     """Build a GateResult, applying warn mode if configured."""
-    if not allowed and policy.mode == "warn":
+    if not allowed and policy.enforcement in ("warn", "audit"):
         logger.warning("UNTRUSTED SKILL LOADED: %s — %s", skill_name, reason)
         return GateResult(
             allowed=True,
@@ -104,22 +103,7 @@ def verify_before_load(
             policy,
         )
 
-    # Build identity constraints from ALL trusted identities/issuers
-    trusted_list: list[IdentityConstraints] = []
-    if policy.trusted_identities and policy.trusted_issuers:
-        # Cross-product: each identity with each issuer
-        for ident in policy.trusted_identities:
-            for iss in policy.trusted_issuers:
-                trusted_list.append(IdentityConstraints(identity=ident, issuer=iss))
-    elif policy.trusted_identities:
-        for ident in policy.trusted_identities:
-            trusted_list.append(IdentityConstraints(identity=ident))
-    elif policy.trusted_issuers:
-        for iss in policy.trusted_issuers:
-            trusted_list.append(IdentityConstraints(issuer=iss))
-
     verifier = SkillVerifier(
-        trusted_identities=trusted_list if trusted_list else None,
         staging=staging,
         tuf_url=tuf_url,
         tuf_root=tuf_root,
@@ -135,20 +119,15 @@ def verify_before_load(
             issuer=result.issuer,
         )
 
-    # Check trust policy (post-hoc check on full lists)
-    if not policy.is_identity_trusted(result.identity):
+    if not policy.is_publisher_trusted(
+        identity=result.identity,
+        issuer=result.issuer,
+        claims=result.claims,
+        public_key=result.public_key,
+    ):
         return _make_result(
             False, skill_name,
-            f"Signer '{result.identity}' is not in trusted identities list",
-            policy,
-            identity=result.identity,
-            issuer=result.issuer,
-        )
-
-    if not policy.is_issuer_trusted(result.issuer):
-        return _make_result(
-            False, skill_name,
-            f"Issuer '{result.issuer}' is not in trusted issuers list",
+            f"Signer '{result.identity}' is not a trusted publisher",
             policy,
             identity=result.identity,
             issuer=result.issuer,

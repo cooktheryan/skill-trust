@@ -103,6 +103,44 @@ Notes:
 - `--tuf-url` and `--staging` are mutually exclusive; custom trust must not accidentally fall back to public Sigstore trust.
 - The gate API accepts the same `tuf_url` and `tuf_root` parameters for loaders that enforce skills at runtime.
 
+## File Trust and Pre-Execution Scanning
+
+In addition to skill directories, `skill-trust` can protect arbitrary instruction, configuration,
+and script files. A policy selects files with glob `includes`, defines trusted publishers, and can
+block known digests before an agent or command starts.
+
+```bash
+# One-time local setup
+skill-trust trust keygen --key ~/.config/skill-trust/default.pem
+
+# Project setup
+skill-trust trust init \
+  --include "SKILL.md" \
+  --include "CLAUDE.md" \
+  --include "src/**/*.py" \
+  --key ~/.config/skill-trust/default.pem
+skill-trust trust sign-policy --key ~/.config/skill-trust/default.pem
+
+# Sign and verify everything covered by the policy
+skill-trust trust sign --all --key ~/.config/skill-trust/default.pem
+skill-trust trust verify --all --trust-anchor ~/.config/skill-trust/default.pem.pub
+```
+
+File bundles use `<filename>.bundle`. Keyed bundles use ECDSA P-256 and SHA-256; keyless file
+bundles use standard Sigstore hashedrekord bundles. The scanner does not respect `.gitignore`,
+so a hidden or ignored file cannot bypass policy.
+
+Programmatic callers can use:
+
+```python
+from skill_trust.scan import preexec_verify
+from skill_trust.verifier import SkillVerifier
+
+report = preexec_verify(project_root, policy, SkillVerifier())
+if not report.allowed:
+    raise RuntimeError("trust scan failed")
+```
+
 ## How It Works
 
 ### What Gets Signed
@@ -189,11 +227,10 @@ The verification gate is designed to be called by plugin loaders before injectin
 from skill_trust.gate import verify_before_load
 from skill_trust.policy import TrustPolicy
 
-policy = TrustPolicy(
+policy = TrustPolicy.from_dict(
     require_signature=True,
-    trusted_identities=["developer@example.com"],
-    trusted_issuers=["https://accounts.google.com"],
-    mode="enforce",  # or "warn"
+    publishers=[{"identity": "developer@example.com"}],
+    enforcement="deny",  # or "warn"
 )
 
 result = verify_before_load(
@@ -215,17 +252,43 @@ Policies can be loaded from JSON files:
 
 ```json
 {
-  "require_signature": true,
-  "trusted_identities": ["dev@example.com", "ci@github.com"],
-  "trusted_issuers": ["https://accounts.google.com", "https://token.actions.githubusercontent.com"],
-  "mode": "enforce"
+  "predicate": "https://skill-trust.dev/policy/v1",
+  "includes": ["SKILL.md", "CLAUDE.md", "src/**/*.py"],
+  "publishers": [
+    {
+      "name": "local-dev",
+      "key_id": "sha256-of-spki-public-key",
+      "public_key": "base64-encoded-DER-SPKI"
+    },
+    {
+      "name": "github-ci",
+      "issuer": "https://token.actions.githubusercontent.com",
+      "repository": "cooktheryan/*",
+      "workflow": ".github/workflows/sign.yml",
+      "ref_pattern": "refs/heads/main"
+    }
+  ],
+  "blocklist": {
+    "digests": [
+      {"sha256": "known-malicious-digest", "description": "Example blocklist entry"}
+    ],
+    "publishers": []
+  },
+  "enforcement": "deny"
 }
 ```
 
+Project policies must be signed with `trust sign-policy`. Verification requires an anchor: either
+`--trust-anchor <public-key>` or a user policy supplied with `--user-policy`. User and project
+policies compose by unioning publishers, includes, and blocklists while selecting the strictest
+enforcement mode.
+
 | Mode | Behavior |
 |------|----------|
-| `enforce` | Block unsigned/tampered/untrusted skills |
-| `warn` | Allow loading but populate `result.warnings` list |
+| `deny` | Block unsigned, tampered, untrusted, or blocklisted files |
+| `warn` | Allow non-blocklisted failures but populate `report.warnings` |
+| `audit` | Allow non-blocklisted failures and record results for review |
+| Blocklists | Digest and publisher denials always apply, including in `warn` and `audit` modes |
 
 ## Signing in CI (GitHub Actions)
 
@@ -282,10 +345,12 @@ src/skill_trust/
 ├── signer.py       # SkillSigner (Sigstore keyless) + EC key generation
 ├── verifier.py     # SkillVerifier (DSSE verify + manifest diff)
 ├── gate.py         # verify_before_load() — plugin loader integration
-├── policy.py       # TrustPolicy (enforce/warn, identity/issuer constraints)
+├── policy.py       # Signed policy model, publishers, includes, blocklists, composition
+├── keyed.py        # ECDSA P-256 key generation and keyed signatures
+├── scan.py         # Policy-driven pre-execution file scanning
 ├── _canonical.py   # Deterministic JSON serialization
 ├── _identity.py    # X.509 certificate identity extraction
-└── cli/            # skill-trust sign/verify/inspect commands
+└── cli/            # sign/verify/inspect plus the trust command group
 ```
 
 ### Design Decisions
@@ -297,7 +362,7 @@ src/skill_trust/
 | Root digest as DSSE subject | Single hash from sorted file digests (model-transparency pattern); simple artifact reference |
 | Serialization metadata in predicate | Hash algorithm and version recorded for reproducibility (model-transparency pattern) |
 | Separate crypto from policy | Verifier proves identity; gate/policy decides trust (same pattern as sigstore-a2a) |
-| EC key signing for tests | Offline testing without Sigstore infrastructure (model-transparency pattern) |
+| Keyed and keyless signing | Supports local/headless workflows and OIDC-backed CI/RHTAS workflows |
 
 ## Security
 
@@ -307,7 +372,7 @@ src/skill_trust/
 |--------|------------|
 | Malicious skill injection | Signature verification blocks unsigned skills |
 | Skill content tampering | Manifest diff detects any file modification, addition, or removal |
-| Impersonation (wrong signer) | Identity constraints verify OIDC identity + issuer |
+| Impersonation (wrong signer) | Publisher policy verifies identity, issuer, repository, workflow, ref, or keyed public key |
 | Replay (old bundle on new files) | Manifest comparison fails if files changed |
 | Transplant (bundle from skill A on skill B) | Skill name verified in both DSSE subject and manifest diff |
 | Symlink attacks | Symlinks skipped; resolved paths verified within skill directory |
@@ -317,7 +382,8 @@ src/skill_trust/
 
 - **TOCTOU**: Files can change between verification and loading. For maximum security, verify at load time, not just install time.
 - **Warn mode**: Allows untrusted skills while populating `warnings`. Monitor warnings in production.
-- **UnsafeNoOp fallback**: When no identity constraints are provided, any valid Sigstore signer is accepted. Always configure identity constraints in production.
+- **Runtime syscall interception**: `preexec_verify()` provides startup enforcement, but it does not trap every `openat()` like a seccomp-notify supervisor. Integrators should call it immediately before loading files.
+- **Cryptographic layer**: `SkillVerifier` can cryptographically verify a keyless signature before publisher policy is applied. Always use `scan_project()`, `verify_before_load()`, or explicit publisher checks in production.
 
 ## Related Projects
 

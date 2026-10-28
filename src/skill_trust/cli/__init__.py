@@ -15,4 +15,4 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     ctx.obj["verbose"] = verbose
 
 
-from skill_trust.cli import inspect, sign, verify  # noqa: E402,F401
+from skill_trust.cli import inspect, sign, trust, verify  # noqa: E402,F401

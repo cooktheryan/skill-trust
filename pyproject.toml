@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "skill-trust"
-version = "0.2.0"
+version = "0.3.0"
 description = "Keyless signing and verification for AI agent skills using Sigstore"
 requires-python = ">=3.12"
 license = "Apache-2.0"

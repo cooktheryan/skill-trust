@@ -1,29 +1,29 @@
-"""Skill verification using Sigstore."""
+"""Skill and file verification using Sigstore or keyed ECDSA."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
 
+from sigstore.dsse import Envelope
+from sigstore.dsse import _verify as verify_dsse_envelope
 from sigstore.models import Bundle, ClientTrustConfig
 from sigstore.verify import Verifier
 from sigstore.verify.policy import AnyOf, Identity, UnsafeNoOp
 
 from skill_trust._identity import extract_identity
+from skill_trust.keyed import KEYED_BUNDLE_MEDIA_TYPE, decode_public_key, key_id, verify_bytes
 from skill_trust.manifest import build_manifest
 from skill_trust.models import IdentityConstraints, Manifest, VerificationResult
 
 logger = logging.getLogger(__name__)
+_IN_TOTO_PAYLOAD_TYPE = "application/vnd.in-toto+json"
 
 
 class SkillVerifier:
-    """Verifies signed AI agent skills using Sigstore.
-
-    Two-step verification:
-    1. Cryptographic: DSSE signature verification via sigstore (Fulcio cert + Rekor log)
-    2. Content: Compare signed manifest against current files on disk
-    """
+    """Verifies signed skills and files using Sigstore or keyed ECDSA."""
 
     def __init__(
         self,
@@ -41,191 +41,225 @@ class SkillVerifier:
 
         self._constraints = identity_constraints
         self._trusted_identities = trusted_identities or []
+        self._staging = staging
+        self._tuf_url = tuf_url
+        self._tuf_root = tuf_root
+        self._verifier: Verifier | None = None
 
-        if tuf_url:
-            trust_config = ClientTrustConfig.from_tuf(
-                tuf_url,
-                bootstrap_root=tuf_root,
-            )
-            self._verifier = Verifier(trusted_root=trust_config.trusted_root)
-        else:
-            self._verifier = (
-                Verifier.staging() if staging else Verifier.production()
-            )
+    def _keyless_verifier(self) -> Verifier:
+        if self._verifier is None:
+            if self._tuf_url:
+                trust_config = ClientTrustConfig.from_tuf(
+                    self._tuf_url,
+                    bootstrap_root=self._tuf_root,
+                )
+                self._verifier = Verifier(trusted_root=trust_config.trusted_root)
+            else:
+                self._verifier = (
+                    Verifier.staging() if self._staging else Verifier.production()
+                )
+        return self._verifier
 
     def _build_policy(self):
-        """Build a sigstore verification policy from identity constraints.
-
-        Raises ValueError if no identity constraints are provided, to prevent
-        accidentally accepting signatures from any signer.
-        """
-        # If multiple trusted identities are configured, use AnyOf
         if self._trusted_identities:
             policies = []
-            for c in self._trusted_identities:
-                if c.identity and c.issuer:
-                    policies.append(Identity(identity=c.identity, issuer=c.issuer))
-                elif c.identity:
-                    policies.append(Identity(identity=c.identity))
-                elif c.issuer:
-                    policies.append(Identity(issuer=c.issuer))
+            for constraint in self._trusted_identities:
+                if constraint.identity and constraint.issuer:
+                    policies.append(Identity(identity=constraint.identity, issuer=constraint.issuer))
+                elif constraint.identity:
+                    policies.append(Identity(identity=constraint.identity))
+                elif constraint.issuer:
+                    policies.append(Identity(issuer=constraint.issuer))
             if policies:
                 return AnyOf(policies) if len(policies) > 1 else policies[0]
 
-        # Single constraint
         if self._constraints is not None:
             if self._constraints.identity and self._constraints.issuer:
-                return Identity(
-                    identity=self._constraints.identity,
-                    issuer=self._constraints.issuer,
-                )
-            elif self._constraints.identity:
+                return Identity(identity=self._constraints.identity, issuer=self._constraints.issuer)
+            if self._constraints.identity:
                 return Identity(identity=self._constraints.identity)
-            elif self._constraints.issuer:
+            if self._constraints.issuer:
                 return Identity(issuer=self._constraints.issuer)
 
-        # No constraints — refuse to proceed silently
         logger.warning(
-            "No identity constraints provided. Signature will be verified "
-            "cryptographically but the signer identity will NOT be checked. "
-            "Any valid Sigstore signer will be accepted."
+            "No cryptographic identity constraints provided. The caller must apply "
+            "publisher policy after verification."
         )
         return UnsafeNoOp()
 
-    def verify_skill(
-        self,
-        skill_path: Path,
-        bundle_path: Path,
-    ) -> VerificationResult:
-        """Verify a signed skill.
-
-        Args:
-            skill_path: Path to the skill directory on disk.
-            bundle_path: Path to the .sigstore.json bundle.
-
-        Returns:
-            VerificationResult with verification status and identity info.
-        """
+    def verify_skill(self, skill_path: Path, bundle_path: Path) -> VerificationResult:
         skill_path = Path(skill_path).resolve()
         bundle_path = Path(bundle_path).resolve()
-
-        # Load the sigstore bundle
         try:
             bundle_text = bundle_path.read_text()
         except FileNotFoundError:
-            return VerificationResult(
-                verified=False,
-                error=f"Bundle not found: {bundle_path}",
-            )
+            return VerificationResult(verified=False, error=f"Bundle not found: {bundle_path}")
         except PermissionError:
+            return VerificationResult(verified=False, error=f"Permission denied reading bundle: {bundle_path}")
+
+        try:
+            bundle_data = json.loads(bundle_text)
+        except json.JSONDecodeError as error:
+            return VerificationResult(verified=False, error=f"Invalid bundle format: {error}")
+
+        if bundle_data.get("mediaType") == KEYED_BUNDLE_MEDIA_TYPE:
+            return self._verify_keyed_skill(skill_path, bundle_data)
+        return self._verify_keyless_skill(skill_path, bundle_text)
+
+    def verify_file(self, file_path: Path, bundle_path: Path) -> VerificationResult:
+        file_path = Path(file_path).resolve()
+        bundle_path = Path(bundle_path).resolve()
+        try:
+            data = file_path.read_bytes()
+            bundle_text = bundle_path.read_text()
+        except FileNotFoundError as error:
+            return VerificationResult(verified=False, error=f"File or bundle not found: {error}")
+        except PermissionError as error:
+            return VerificationResult(verified=False, error=f"Permission denied: {error}")
+
+        try:
+            bundle_data = json.loads(bundle_text)
+        except json.JSONDecodeError as error:
+            return VerificationResult(verified=False, error=f"Invalid bundle format: {error}")
+
+        digest = hashlib.sha256(data).hexdigest()
+        if bundle_data.get("mediaType") == KEYED_BUNDLE_MEDIA_TYPE:
+            try:
+                public_key = decode_public_key(bundle_data["publicKey"])
+            except (KeyError, TypeError, ValueError) as error:
+                return VerificationResult(verified=False, error=f"Invalid keyed bundle: {error}")
+            valid = (
+                bundle_data.get("sha256") == digest
+                and verify_bytes(public_key, data, bundle_data.get("signature", ""))
+            )
+            encoded_key = bundle_data.get("publicKey")
+            claims = {"key_id": key_id(public_key)}
             return VerificationResult(
-                verified=False,
-                error=f"Permission denied reading bundle: {bundle_path}",
+                verified=valid,
+                identity=f"key:{claims['key_id']}" if valid else None,
+                claims=claims,
+                public_key=encoded_key,
+                error=None if valid else "File signature verification failed",
             )
 
         try:
             bundle = Bundle.from_json(bundle_text)
-        except (json.JSONDecodeError, ValueError) as e:
-            return VerificationResult(
-                verified=False,
-                error=f"Invalid bundle format: {e}",
-            )
+            self._keyless_verifier().verify_artifact(data, bundle, self._build_policy())
+            identity_info = extract_identity(bundle.signing_certificate)
+        except Exception as error:
+            return VerificationResult(verified=False, error=f"Signature verification failed: {error}")
 
-        # Step 1: Cryptographic DSSE verification
-        policy = self._build_policy()
+        return VerificationResult(
+            verified=True,
+            identity=identity_info.get("identity"),
+            issuer=identity_info.get("issuer"),
+            claims=identity_info,
+        )
+
+    def _verify_keyed_skill(self, skill_path: Path, bundle_data: dict) -> VerificationResult:
         try:
-            _payload_type, payload_bytes = self._verifier.verify_dsse(bundle, policy)
-        except Exception as e:
-            # sigstore raises various exception types for verification failures;
-            # these are all legitimate "signature is invalid" outcomes
-            return VerificationResult(
-                verified=False,
-                error=f"Signature verification failed: {e}",
-            )
-
-        # Extract identity from the signing certificate
-        cert = bundle.signing_certificate
-        identity_info = extract_identity(cert)
-
-        # Parse the authenticated manifest from the DSSE payload
-        try:
-            statement_data = json.loads(payload_bytes)
+            public_key = decode_public_key(bundle_data["publicKey"])
+            envelope = Envelope._from_json(json.dumps(bundle_data["envelope"]))
+            payload = verify_dsse_envelope(public_key, envelope)
+            statement_data = json.loads(payload)
+            if envelope._inner.payload_type != _IN_TOTO_PAYLOAD_TYPE:
+                raise ValueError("unexpected DSSE payload type")
             signed_manifest = Manifest.from_dict(statement_data["predicate"])
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            return VerificationResult(
-                verified=False,
-                identity=identity_info.get("identity"),
-                issuer=identity_info.get("issuer"),
-                error=f"Failed to parse signed manifest: {e}",
-            )
+        except Exception as error:
+            return VerificationResult(verified=False, error=f"Signature verification failed: {error}")
 
-        # Step 2: Check skill name matches
-        disk_skill_name = skill_path.name
-        if signed_manifest.skill_name != disk_skill_name:
+        claims = {"key_id": key_id(public_key)}
+        return self._finish_skill_verification(
+            skill_path,
+            signed_manifest,
+            identity=f"key:{claims['key_id']}",
+            issuer=None,
+            claims=claims,
+            public_key=bundle_data.get("publicKey"),
+        )
+
+    def _verify_keyless_skill(self, skill_path: Path, bundle_text: str) -> VerificationResult:
+        try:
+            bundle = Bundle.from_json(bundle_text)
+            _payload_type, payload = self._keyless_verifier().verify_dsse(
+                bundle, self._build_policy()
+            )
+            if _payload_type != _IN_TOTO_PAYLOAD_TYPE:
+                raise ValueError("unexpected DSSE payload type")
+            statement_data = json.loads(payload)
+            signed_manifest = Manifest.from_dict(statement_data["predicate"])
+        except Exception as error:
+            return VerificationResult(verified=False, error=f"Signature verification failed: {error}")
+
+        identity_info = extract_identity(bundle.signing_certificate)
+        return self._finish_skill_verification(
+            skill_path,
+            signed_manifest,
+            identity=identity_info.get("identity"),
+            issuer=identity_info.get("issuer"),
+            claims=identity_info,
+        )
+
+    def _finish_skill_verification(
+        self,
+        skill_path: Path,
+        signed_manifest: Manifest,
+        *,
+        identity: str | None,
+        issuer: str | None,
+        claims: dict,
+        public_key: str | None = None,
+    ) -> VerificationResult:
+        common = {
+            "identity": identity,
+            "issuer": issuer,
+            "claims": claims,
+            "public_key": public_key,
+        }
+        if signed_manifest.skill_name != skill_path.name:
             return VerificationResult(
                 verified=False,
-                identity=identity_info.get("identity"),
-                issuer=identity_info.get("issuer"),
                 error=(
                     f"Skill name mismatch: bundle signed for '{signed_manifest.skill_name}' "
-                    f"but verifying '{disk_skill_name}'"
+                    f"but verifying '{skill_path.name}'"
                 ),
+                **common,
             )
 
-        # Step 3: Compare signed manifest against current disk state
         try:
             disk_manifest = build_manifest(skill_path)
-        except (FileNotFoundError, NotADirectoryError, ValueError) as e:
+        except (FileNotFoundError, NotADirectoryError, ValueError) as error:
             return VerificationResult(
                 verified=False,
-                identity=identity_info.get("identity"),
-                issuer=identity_info.get("issuer"),
-                error=f"Failed to build disk manifest: {e}",
+                error=f"Failed to build disk manifest: {error}",
+                **common,
             )
 
         discrepancies = signed_manifest.diff(disk_manifest)
-
         return VerificationResult(
-            verified=len(discrepancies) == 0,
-            identity=identity_info.get("identity"),
-            issuer=identity_info.get("issuer"),
+            verified=not discrepancies,
             discrepancies=discrepancies,
             error="Files have been tampered with" if discrepancies else None,
+            **common,
         )
 
-    def verify_plugin(
-        self,
-        plugin_root: Path,
-    ) -> dict[str, VerificationResult]:
-        """Verify all signed skills in a plugin.
-
-        Returns a dict mapping skill name to VerificationResult.
-
-        Raises:
-            FileNotFoundError: If the skills/ directory does not exist.
-        """
+    def verify_plugin(self, plugin_root: Path) -> dict[str, VerificationResult]:
         plugin_root = Path(plugin_root).resolve()
         skills_dir = plugin_root / "skills"
         bundles_dir = plugin_root / ".skill-trust" / "skills"
-
         if not skills_dir.is_dir():
             raise FileNotFoundError(f"No skills/ directory found in {plugin_root}")
 
         results: dict[str, VerificationResult] = {}
-
         for skill_dir in sorted(skills_dir.iterdir()):
             if not skill_dir.is_dir():
                 continue
-
             bundle_path = bundles_dir / f"{skill_dir.name}.sigstore.json"
-
             if not bundle_path.exists():
                 results[skill_dir.name] = VerificationResult(
                     verified=False,
                     error="No signature bundle found",
                 )
                 continue
-
             results[skill_dir.name] = self.verify_skill(skill_dir, bundle_path)
-
         return results

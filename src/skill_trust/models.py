@@ -113,6 +113,8 @@ class VerificationResult:
     timestamp: datetime | None = None
     discrepancies: list[str] = field(default_factory=list)
     error: str | None = None
+    claims: dict[str, str | None] = field(default_factory=dict)
+    public_key: str | None = None
 
 
 @dataclass(frozen=True)

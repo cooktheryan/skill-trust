@@ -10,19 +10,25 @@ from skill_trust.policy import TrustPolicy
 
 
 class TestTrustPolicy:
-    def test_default_trusts_all(self) -> None:
+    def test_default_has_no_trusted_publishers(self) -> None:
         policy = TrustPolicy()
-        assert policy.is_identity_trusted("anyone@example.com")
-        assert policy.is_issuer_trusted("https://any.issuer.com")
+        assert not policy.is_publisher_trusted(
+            identity="anyone@example.com",
+            issuer="https://any.issuer.com",
+        )
 
     def test_identity_constraint(self) -> None:
-        policy = TrustPolicy(trusted_identities=["alice@example.com"])
+        policy = TrustPolicy.from_dict(
+            {"publishers": [{"identity": "alice@example.com"}]}
+        )
         assert policy.is_identity_trusted("alice@example.com")
         assert not policy.is_identity_trusted("bob@example.com")
         assert not policy.is_identity_trusted(None)
 
     def test_issuer_constraint(self) -> None:
-        policy = TrustPolicy(trusted_issuers=["https://accounts.google.com"])
+        policy = TrustPolicy.from_dict(
+            {"publishers": [{"issuer": "https://accounts.google.com"}]}
+        )
         assert policy.is_issuer_trusted("https://accounts.google.com")
         assert not policy.is_issuer_trusted("https://evil.com")
 
@@ -37,14 +43,14 @@ class TestTrustPolicy:
 
         policy = TrustPolicy.from_file(policy_file)
         assert policy.require_signature is True
-        assert policy.trusted_identities == ["dev@example.com"]
-        assert policy.mode == "warn"
+        assert policy.is_identity_trusted("dev@example.com")
+        assert policy.enforcement == "warn"
 
     def test_from_file_invalid_mode_raises(self, tmp_path: Path) -> None:
         policy_file = tmp_path / "bad.json"
         policy_file.write_text(json.dumps({"mode": "yolo"}))
 
-        with pytest.raises(ValueError, match="Invalid mode"):
+        with pytest.raises(ValueError, match="Invalid enforcement mode"):
             TrustPolicy.from_file(policy_file)
 
     def test_from_file_invalid_identities_type_raises(self, tmp_path: Path) -> None:
@@ -62,14 +68,14 @@ class TestTrustPolicy:
             TrustPolicy.from_file(policy_file)
 
     def test_to_dict_round_trip(self) -> None:
-        policy = TrustPolicy(
-            require_signature=True,
-            trusted_identities=["dev@example.com"],
-            mode="enforce",
-        )
+        policy = TrustPolicy.from_dict({
+            "require_signature": True,
+            "trusted_identities": ["dev@example.com"],
+            "mode": "enforce",
+        })
         d = policy.to_dict()
-        assert d["require_signature"] is True
-        assert d["trusted_identities"] == ["dev@example.com"]
+        assert policy.is_identity_trusted("dev@example.com")
+        assert d["enforcement"] == "deny"
 
 
 class TestGate:
@@ -82,7 +88,7 @@ class TestGate:
         assert "not required" in result.reason
 
     def test_no_signature_enforced_blocks(self, tmp_skill: Path) -> None:
-        policy = TrustPolicy(require_signature=True, mode="enforce")
+        policy = TrustPolicy(require_signature=True, enforcement="deny")
         plugin_root = tmp_skill.parent
 
         result = verify_before_load(tmp_skill, plugin_root, policy)
@@ -90,7 +96,7 @@ class TestGate:
         assert "No signature found" in result.reason
 
     def test_no_signature_warn_allows_with_warning(self, tmp_skill: Path) -> None:
-        policy = TrustPolicy(require_signature=True, mode="warn")
+        policy = TrustPolicy(require_signature=True, enforcement="warn")
         plugin_root = tmp_skill.parent
 
         result = verify_before_load(tmp_skill, plugin_root, policy)

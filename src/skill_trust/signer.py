@@ -9,6 +9,7 @@ Following model-transparency patterns:
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -16,14 +17,21 @@ from cryptography.hazmat.primitives.serialization import (
     Encoding,
     NoEncryption,
     PrivateFormat,
-    load_pem_private_key,
 )
 from sigstore.dsse import DigestSet, StatementBuilder, Subject
+from sigstore.dsse import _sign as sign_dsse_envelope
 from sigstore.models import Bundle, ClientTrustConfig
 from sigstore.oidc import IdentityToken, Issuer, detect_credential
 from sigstore.sign import SigningContext
 
 from skill_trust.manifest import build_manifest
+from skill_trust.keyed import (
+    KEYED_BUNDLE_MEDIA_TYPE,
+    encode_public_key,
+    key_id,
+    load_private_key,
+    sign_bytes,
+)
 from skill_trust.models import Manifest, SignedSkill
 
 PREDICATE_TYPE = "https://skill-trust.dev/skill/v1"
@@ -44,7 +52,13 @@ class SkillSigner:
         use_ambient_credentials: bool = True,
         tuf_url: str | None = None,
         tuf_root: Path | None = None,
+        private_key: Path | None = None,
     ) -> None:
+        if private_key and (staging or tuf_url):
+            raise ValueError("Keyed signing cannot use Sigstore keyless infrastructure")
+
+        self._private_key = load_private_key(private_key) if private_key else None
+        self._keyless = private_key is None
         if staging and tuf_url:
             raise ValueError("--staging and a custom TUF URL cannot be combined")
         if tuf_root and not tuf_url:
@@ -54,7 +68,10 @@ class SkillSigner:
         self._use_ambient_credentials = use_ambient_credentials
         self._tuf_root = tuf_root
 
-        if tuf_url:
+        if not self._keyless:
+            self._signing_ctx = None
+            self._trust_config = None
+        elif tuf_url:
             trust_config = ClientTrustConfig.from_tuf(
                 tuf_url,
                 bootstrap_root=tuf_root,
@@ -66,8 +83,9 @@ class SkillSigner:
                 else ClientTrustConfig.production()
             )
 
-        self._signing_ctx = SigningContext.from_trust_config(trust_config)
-        self._trust_config = trust_config
+        if self._keyless:
+            self._signing_ctx = SigningContext.from_trust_config(trust_config)
+            self._trust_config = trust_config
 
     def _get_identity_token(self) -> IdentityToken:
         """Acquire an OIDC identity token.
@@ -104,15 +122,49 @@ class SkillSigner:
         skill_path = Path(skill_path).resolve()
         manifest = build_manifest(skill_path)
 
-        statement = _build_statement(manifest).build()
-        identity = self._get_identity_token()
-
-        with self._signing_ctx.signer(identity, cache=True) as signer:
-            bundle = signer.sign_dsse(statement)
-
-        bundle_path = _write_bundle(bundle, manifest.skill_name, skill_path, output_dir)
+        if self._private_key is not None:
+            statement = _build_statement(manifest).build()
+            envelope = sign_dsse_envelope(self._private_key, statement)
+            bundle_data = {
+                "mediaType": KEYED_BUNDLE_MEDIA_TYPE,
+                "envelope": json.loads(envelope.to_json()),
+                "publicKey": encode_public_key(self._private_key.public_key()),
+                "keyId": key_id(self._private_key.public_key()),
+            }
+            bundle_path = _write_bundle(
+                bundle_data, manifest.skill_name, skill_path, output_dir
+            )
+        else:
+            statement = _build_statement(manifest).build()
+            identity = self._get_identity_token()
+            with self._signing_ctx.signer(identity, cache=True) as signer:
+                bundle = signer.sign_dsse(statement)
+            bundle_path = _write_bundle(bundle, manifest.skill_name, skill_path, output_dir)
 
         return SignedSkill(manifest=manifest, bundle_path=bundle_path)
+
+    def sign_file(self, file_path: Path, output_path: Path | None = None) -> Path:
+        """Sign an arbitrary file with keyed ECDSA or keyless Sigstore."""
+        file_path = Path(file_path).resolve()
+        data = file_path.read_bytes()
+        output_path = output_path or file_path.with_name(f"{file_path.name}.bundle")
+
+        if self._private_key is not None:
+            bundle_data = {
+                "mediaType": KEYED_BUNDLE_MEDIA_TYPE,
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "signature": sign_bytes(self._private_key, data),
+                "publicKey": encode_public_key(self._private_key.public_key()),
+                "keyId": key_id(self._private_key.public_key()),
+            }
+            output_path.write_text(json.dumps(bundle_data, indent=2) + "\n")
+            return output_path
+
+        identity = self._get_identity_token()
+        with self._signing_ctx.signer(identity, cache=True) as signer:
+            bundle = signer.sign_artifact(data)
+        output_path.write_text(bundle.to_json())
+        return output_path
 
     def sign_plugin(self, plugin_root: Path) -> list[SignedSkill]:
         """Sign all skill directories in a plugin.
@@ -179,7 +231,7 @@ def _build_statement(manifest: Manifest) -> StatementBuilder:
 
 
 def _write_bundle(
-    bundle: Bundle,
+    bundle: Bundle | dict,
     skill_name: str,
     skill_path: Path,
     output_dir: Path | None,
@@ -190,6 +242,9 @@ def _write_bundle(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     bundle_path = output_dir / f"{skill_name}.sigstore.json"
-    bundle_path.write_text(bundle.to_json())
+    bundle_text = (
+        bundle.to_json() if isinstance(bundle, Bundle) else json.dumps(bundle, indent=2) + "\n"
+    )
+    bundle_path.write_text(bundle_text)
 
     return bundle_path

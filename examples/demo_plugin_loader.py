@@ -22,7 +22,10 @@ def simulate_plugin_loader(plugin_root: Path, policy: TrustPolicy) -> None:
     skills_dir = plugin_root / "skills"
 
     print(f"\nPlugin loader scanning: {plugin_root.name}")
-    print(f"Policy: require_signature={policy.require_signature}, mode={policy.mode}")
+    print(
+        f"Policy: require_signature={policy.require_signature}, "
+        f"enforcement={policy.enforcement}"
+    )
     print("-" * 50)
 
     for skill_dir in sorted(skills_dir.iterdir()):
@@ -68,12 +71,12 @@ def main() -> None:
 
         # ── Scenario 1: Enforce mode ──────────────────────────────
         print("\n--- Scenario 1: Enforce mode (strict) ---")
-        policy = TrustPolicy(require_signature=True, mode="enforce")
+        policy = TrustPolicy(require_signature=True, enforcement="deny")
         simulate_plugin_loader(plugin_root, policy)
 
         # ── Scenario 2: Warn mode ────────────────────────────────
         print("\n--- Scenario 2: Warn mode (permissive) ---")
-        policy = TrustPolicy(require_signature=True, mode="warn")
+        policy = TrustPolicy(require_signature=True, enforcement="warn")
         simulate_plugin_loader(plugin_root, policy)
 
         # ── Scenario 3: Signatures not required ──────────────────
