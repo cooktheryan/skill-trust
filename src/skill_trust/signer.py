@@ -42,14 +42,30 @@ class SkillSigner:
         identity_token: str | None = None,
         staging: bool = False,
         use_ambient_credentials: bool = True,
+        tuf_url: str | None = None,
+        tuf_root: Path | None = None,
     ) -> None:
-        self._raw_token = identity_token
-        self._staging = staging
-        self._use_ambient_credentials = use_ambient_credentials
+        if staging and tuf_url:
+            raise ValueError("--staging and a custom TUF URL cannot be combined")
+        if tuf_root and not tuf_url:
+            raise ValueError("A custom TUF bootstrap root requires a TUF URL")
 
-        trust_config = (
-            ClientTrustConfig.staging() if staging else ClientTrustConfig.production()
-        )
+        self._raw_token = identity_token
+        self._use_ambient_credentials = use_ambient_credentials
+        self._tuf_root = tuf_root
+
+        if tuf_url:
+            trust_config = ClientTrustConfig.from_tuf(
+                tuf_url,
+                bootstrap_root=tuf_root,
+            )
+        else:
+            trust_config = (
+                ClientTrustConfig.staging()
+                if staging
+                else ClientTrustConfig.production()
+            )
+
         self._signing_ctx = SigningContext.from_trust_config(trust_config)
         self._trust_config = trust_config
 

@@ -64,6 +64,8 @@ def verify_before_load(
     policy: TrustPolicy,
     *,
     staging: bool = False,
+    tuf_url: str | None = None,
+    tuf_root: Path | None = None,
 ) -> GateResult:
     """Verify a skill before loading it into LLM context.
 
@@ -75,6 +77,8 @@ def verify_before_load(
         plugin_root: Path to the plugin root (parent of skills/).
         policy: Trust policy defining what's required.
         staging: Use Sigstore staging infrastructure.
+        tuf_url: TUF repository URL for a private Sigstore-compatible service.
+        tuf_root: Optional pinned TUF bootstrap root.
 
     Returns:
         GateResult indicating whether the skill should be loaded.
@@ -117,6 +121,8 @@ def verify_before_load(
     verifier = SkillVerifier(
         trusted_identities=trusted_list if trusted_list else None,
         staging=staging,
+        tuf_url=tuf_url,
+        tuf_root=tuf_root,
     )
     result = verifier.verify_skill(skill_path, bundle_path)
 

@@ -27,6 +27,18 @@ console = Console()
     help="Use Sigstore staging infrastructure (for testing).",
 )
 @click.option(
+    "--tuf-url",
+    type=str,
+    default=None,
+    help="TUF repository URL for a private Sigstore-compatible service (for example, RHTAS).",
+)
+@click.option(
+    "--tuf-root",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Pinned TUF bootstrap root for a custom trust configuration.",
+)
+@click.option(
     "--identity-token",
     type=str,
     default=None,
@@ -39,6 +51,8 @@ def sign(
     output: Path | None,
     staging: bool,
     identity_token: str | None,
+    tuf_url: str | None,
+    tuf_root: Path | None,
 ) -> None:
     """Sign a skill directory or all skills in a plugin."""
     from skill_trust.signer import SkillSigner
@@ -46,6 +60,8 @@ def sign(
     signer = SkillSigner(
         identity_token=identity_token,
         staging=staging,
+        tuf_url=tuf_url,
+        tuf_root=tuf_root,
     )
 
     if (path / "skills").is_dir():

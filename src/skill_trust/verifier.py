@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 
-from sigstore.models import Bundle
+from sigstore.models import Bundle, ClientTrustConfig
 from sigstore.verify import Verifier
 from sigstore.verify.policy import AnyOf, Identity, UnsafeNoOp
 
@@ -31,10 +31,27 @@ class SkillVerifier:
         identity_constraints: IdentityConstraints | None = None,
         trusted_identities: list[IdentityConstraints] | None = None,
         staging: bool = False,
+        tuf_url: str | None = None,
+        tuf_root: Path | None = None,
     ) -> None:
+        if staging and tuf_url:
+            raise ValueError("--staging and a custom TUF URL cannot be combined")
+        if tuf_root and not tuf_url:
+            raise ValueError("A custom TUF bootstrap root requires a TUF URL")
+
         self._constraints = identity_constraints
         self._trusted_identities = trusted_identities or []
-        self._verifier = Verifier.staging() if staging else Verifier.production()
+
+        if tuf_url:
+            trust_config = ClientTrustConfig.from_tuf(
+                tuf_url,
+                bootstrap_root=tuf_root,
+            )
+            self._verifier = Verifier(trusted_root=trust_config.trusted_root)
+        else:
+            self._verifier = (
+                Verifier.staging() if staging else Verifier.production()
+            )
 
     def _build_policy(self):
         """Build a sigstore verification policy from identity constraints.

@@ -13,3 +13,6 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     """Keyless signing and verification for AI agent skills using Sigstore."""
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
+
+
+from skill_trust.cli import inspect, sign, verify  # noqa: E402,F401

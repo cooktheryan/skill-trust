@@ -32,6 +32,18 @@ console = Console()
     is_flag=True,
     help="Use Sigstore staging infrastructure.",
 )
+@click.option(
+    "--tuf-url",
+    type=str,
+    default=None,
+    help="TUF repository URL for a private Sigstore-compatible service (for example, RHTAS).",
+)
+@click.option(
+    "--tuf-root",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Pinned TUF bootstrap root for a custom trust configuration.",
+)
 @click.pass_context
 def verify(
     ctx: click.Context,
@@ -39,6 +51,8 @@ def verify(
     identity: str | None,
     issuer: str | None,
     staging: bool,
+    tuf_url: str | None,
+    tuf_root: Path | None,
 ) -> None:
     """Verify a signed skill directory or all skills in a plugin."""
     from skill_trust.models import IdentityConstraints
@@ -48,7 +62,12 @@ def verify(
     if identity or issuer:
         constraints = IdentityConstraints(identity=identity, issuer=issuer)
 
-    verifier = SkillVerifier(identity_constraints=constraints, staging=staging)
+    verifier = SkillVerifier(
+        identity_constraints=constraints,
+        staging=staging,
+        tuf_url=tuf_url,
+        tuf_root=tuf_root,
+    )
 
     if (path / "skills").is_dir():
         # Plugin root — verify all skills

@@ -13,14 +13,8 @@ import json
 import tempfile
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.hashes import SHA256
-from cryptography.hazmat.primitives.serialization import load_pem_private_key
-
 from skill_trust.gate import verify_before_load
-from skill_trust.manifest import build_manifest
 from skill_trust.policy import TrustPolicy
-from skill_trust.signer import generate_ec_test_key
 
 
 def simulate_plugin_loader(plugin_root: Path, policy: TrustPolicy) -> None:
@@ -58,42 +52,19 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
 
-        # ── Create a plugin with signed and unsigned skills ───────
+        # ── Create a plugin without Sigstore bundles ──────────────
         plugin_root = tmp_path / "my-plugin"
         skills_dir = plugin_root / "skills"
 
-        # Signed skill
-        signed_skill = skills_dir / "signed-skill"
-        signed_skill.mkdir(parents=True)
-        (signed_skill / "SKILL.md").write_text(
-            "---\nname: signed-skill\ndescription: A properly signed skill.\n---\n\n"
-            "# Signed Skill\n\nThis skill is signed and verified.\n"
-        )
+        for skill_name in ["drafting", "research"]:
+            skill_dir = skills_dir / skill_name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {skill_name}\ndescription: Demo skill.\n---\n\n"
+                f"# {skill_name.title()}\n\nThis skill has no Sigstore bundle.\n"
+            )
 
-        # Unsigned skill
-        unsigned_skill = skills_dir / "unsigned-skill"
-        unsigned_skill.mkdir(parents=True)
-        (unsigned_skill / "SKILL.md").write_text(
-            "---\nname: unsigned-skill\ndescription: An unsigned skill.\n---\n\n"
-            "# Unsigned Skill\n\nThis skill has no signature.\n"
-        )
-
-        # Sign only the first skill (using EC key for demo)
-        key_path = tmp_path / "key.pem"
-        generate_ec_test_key(key_path)
-        private_key = load_pem_private_key(key_path.read_bytes(), password=None)
-
-        manifest = build_manifest(signed_skill)
-        canonical = json.dumps(manifest.to_dict(), sort_keys=True, separators=(",", ":")).encode()
-        signature = private_key.sign(canonical, ec.ECDSA(SHA256()))
-
-        sig_dir = plugin_root / ".skill-trust" / "skills"
-        sig_dir.mkdir(parents=True)
-        (sig_dir / "signed-skill.manifest.json").write_text(
-            json.dumps(manifest.to_dict(), indent=2)
-        )
-
-        print("\nCreated plugin with 2 skills (1 signed, 1 unsigned)")
+        print("\nCreated plugin with 2 skills and no Sigstore bundles")
 
         # ── Scenario 1: Enforce mode ──────────────────────────────
         print("\n--- Scenario 1: Enforce mode (strict) ---")
