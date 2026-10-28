@@ -49,21 +49,58 @@ def keygen(key: Path, force: bool) -> None:
 @trust.command("init")
 @click.option("--include", "includes", multiple=True, required=True)
 @click.option("--key", type=click.Path(exists=True, path_type=Path), default=DEFAULT_KEY)
-@click.option("--publisher-name", default="local-dev")
+@click.option("--publisher-name", default=None)
+@click.option("--oidc-issuer", default=None)
+@click.option("--identity", default=None)
+@click.option("--repository", default=None)
+@click.option("--workflow", default=None)
+@click.option("--ref-pattern", default=None)
 @click.option("--force", is_flag=True)
-def init(includes: tuple[str, ...], key: Path, publisher_name: str, force: bool) -> None:
-    """Create a trust policy rooted at a keyed publisher."""
+def init(
+    includes: tuple[str, ...],
+    key: Path,
+    publisher_name: str,
+    oidc_issuer: str | None,
+    identity: str | None,
+    repository: str | None,
+    workflow: str | None,
+    ref_pattern: str | None,
+    force: bool,
+) -> None:
+    """Create a policy rooted at a keyed or OIDC publisher."""
     policy_path = Path("trust-policy.json")
     if policy_path.exists() and not force:
         raise click.ClickException(f"Policy already exists: {policy_path}")
-    public_key = load_public_key(key.with_name(f"{key.name}.pub"))
-    policy = TrustPolicy.from_dict({
-        "includes": list(includes),
-        "publishers": [{
-            "name": publisher_name,
+
+    if oidc_issuer:
+        publisher = {
+            "name": publisher_name or "rhtas-publisher",
+            "issuer": oidc_issuer,
+        }
+        for field, value in (
+            ("identity", identity),
+            ("repository", repository),
+            ("workflow", workflow),
+            ("ref_pattern", ref_pattern),
+        ):
+            if value is not None:
+                publisher[field] = value
+    else:
+        oidc_fields = (identity, repository, workflow, ref_pattern)
+        if any(field is not None for field in oidc_fields):
+            raise click.ClickException(
+                "OIDC publisher constraints require --oidc-issuer"
+            )
+        public_key = load_public_key(key.with_name(f"{key.name}.pub"))
+        publisher = {
+            "name": publisher_name or "local-dev",
             "key_id": key_id(public_key),
             "public_key": encode_public_key(public_key),
-        }],
+        }
+
+    policy = TrustPolicy.from_dict({
+        "includes": list(includes),
+        "publishers": [publisher],
         "enforcement": "deny",
     })
     policy_path.write_text(json.dumps(policy.to_dict(), indent=2) + "\n")

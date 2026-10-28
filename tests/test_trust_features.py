@@ -248,3 +248,57 @@ def test_cli_keyed_trust_workflow(tmp_path: Path) -> None:
         assert result.output.strip() == encode_public_key(
             load_public_key(Path(workspace, "key.pem.pub"))
         )
+
+
+def test_cli_init_creates_rhtas_oidc_policy(tmp_path: Path) -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path) as workspace:
+        result = runner.invoke(
+            cli,
+            ["trust", "keygen", "--key", "policy-key.pem"],
+        )
+        assert result.exit_code == 0, result.output
+
+        result = runner.invoke(
+            cli,
+            [
+                "trust", "init",
+                "--include", "SKILL.md",
+                "--include", "src/**/*.py",
+                "--key", "policy-key.pem",
+                "--publisher-name", "rhtas-keycloak",
+                "--oidc-issuer", "https://oidc.example.com/realms/rhtas",
+                "--identity", "jdoe@example.com",
+                "--repository", "cooktheryan/skill-trust",
+                "--workflow", ".github/workflows/sign.yml",
+                "--ref-pattern", "refs/heads/main",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        policy = json.loads(Path(workspace, "trust-policy.json").read_text())
+        assert policy["publishers"] == [{
+            "name": "rhtas-keycloak",
+            "issuer": "https://oidc.example.com/realms/rhtas",
+            "identity": "jdoe@example.com",
+            "repository": "cooktheryan/skill-trust",
+            "workflow": ".github/workflows/sign.yml",
+            "ref_pattern": "refs/heads/main",
+        }]
+
+
+def test_cli_init_requires_issuer_for_oidc_constraints(tmp_path: Path) -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        runner.invoke(cli, ["trust", "keygen", "--key", "policy-key.pem"])
+        result = runner.invoke(
+            cli,
+            [
+                "trust", "init",
+                "--include", "*.txt",
+                "--key", "policy-key.pem",
+                "--identity", "jdoe@example.com",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "OIDC publisher constraints require --oidc-issuer" in result.output

@@ -155,37 +155,29 @@ skill-trust trust init \
   --include 'CLAUDE.md' \
   --include 'SKILL.md' \
   --include 'src/**/*.py' \
-  --key .skill-trust/policy-key.pem
+  --key .skill-trust/policy-key.pem \
+  --publisher-name rhtas-keycloak \
+  --oidc-issuer "$OIDC_ISSUER" \
+  --identity jdoe@redhat.com
 ```
 
-Edit `trust-policy.json` so its publisher is the RHTAS OIDC identity you want to trust:
+Replace `--identity jdoe@redhat.com` with the identity accepted by your RHTAS Fulcio
+configuration. Omit it when the issuer alone should define the trusted publisher.
 
-```json
-{
-  "predicate": "https://skill-trust.dev/policy/v1",
-  "includes": [
-    "CLAUDE.md",
-    "SKILL.md",
-    "src/**/*.py"
-  ],
-  "publishers": [
-    {
-      "name": "rhtas-keycloak",
-      "issuer": "https://keycloak-keycloak-system.example.com/auth/realms/trusted-artifact-signer",
-      "identity": "jdoe@redhat.com"
-    }
-  ],
-  "blocklist": {
-    "digests": [],
-    "publishers": []
-  },
-  "enforcement": "deny"
-}
+For GitHub Actions, constrain the exact repository, workflow, and ref that may sign:
+
+```bash
+skill-trust trust init \
+  --include 'CLAUDE.md' \
+  --include 'SKILL.md' \
+  --include 'src/**/*.py' \
+  --key .skill-trust/policy-key.pem \
+  --publisher-name rhtas-github-actions \
+  --oidc-issuer https://token.actions.githubusercontent.com \
+  --repository cooktheryan/skill-trust \
+  --workflow .github/workflows/sign.yml \
+  --ref-pattern refs/heads/main
 ```
-
-Replace the `issuer` and `identity` values with your actual RHTAS Fulcio configuration. For
-GitHub Actions or another CI identity, add the issuer, repository, workflow, and ref
-constraints supported by the certificate claims emitted by your identity provider.
 
 Sign the policy with the local anchor key:
 
