@@ -1,0 +1,89 @@
+name: RHTAS Integration
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: rhtas-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rhtas:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TUF_URL: ${{ vars.RHTAS_TUF_URL }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install skill-trust
+        run: python -m pip install .
+
+      - name: Sign demo skill with RHTAS
+        run: |
+          skill-trust sign examples/rhtas-demo-plugin \
+            --tuf-url "$TUF_URL" \
+            --tuf-root trust/rhtas/root.json
+
+      - name: Sign policy-covered file with RHTAS
+        run: |
+          skill-trust trust sign --all \
+            --policy trust-policy.json \
+            --tuf-url "$TUF_URL" \
+            --tuf-root trust/rhtas/root.json
+
+      - name: Verify demo skill against RHTAS trust policy
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          from skill_trust.gate import verify_before_load
+          from skill_trust.keyed import (
+              encode_public_key,
+              load_public_key,
+              verify_policy_signature,
+          )
+          from skill_trust.policy import TrustPolicy
+
+          plugin_root = Path("examples/rhtas-demo-plugin")
+          skill_path = plugin_root / "skills" / "greeting"
+          valid, reason = verify_policy_signature(
+              Path("trust-policy.json"),
+              Path("trust-policy.json.keyed.json"),
+              trusted_public_keys=[
+                  encode_public_key(load_public_key(Path("trust/rhtas/policy-key.pub")))
+              ],
+          )
+          if not valid:
+              raise SystemExit(f"Trust policy verification failed: {reason}")
+
+          policy = TrustPolicy.from_file(Path("trust-policy.json"))
+          result = verify_before_load(
+              skill_path=skill_path,
+              plugin_root=plugin_root,
+              policy=policy,
+              tuf_url=__import__("os").environ["TUF_URL"],
+              tuf_root=Path("trust/rhtas/root.json"),
+          )
+          if result.blocked:
+              raise SystemExit(f"RHTAS skill verification failed: {result.reason}")
+          print(f"RHTAS skill verified: {result.identity}")
+          PY
+
+      - name: Verify policy-covered file with RHTAS
+        run: |
+          skill-trust trust verify --all \
+            --policy trust-policy.json \
+            --trust-anchor trust/rhtas/policy-key.pub \
+            --tuf-url "$TUF_URL" \
+            --tuf-root trust/rhtas/root.json

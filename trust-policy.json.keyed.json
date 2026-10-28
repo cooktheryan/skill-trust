@@ -1,0 +1,7 @@
+{
+  "mediaType": "application/vnd.skill-trust.policy-signature.v1+json",
+  "algorithm": "ecdsa-p256-sha256",
+  "publicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEKnZSSVstfub1MBP5/j4iOAzrgO7zFiNx/e5UAJY8yVTgH9dVMTP+iDfkojfuWtP5z+QdWJRcwDaBtAwpyJ0klQ==",
+  "keyId": "9d00db9c93e58b07bcba691143ae65334b87b64cc0ac72277f58465e145d73ae",
+  "signature": "MEYCIQCaN9cDLl8i8UjqnOwQJtKJ1SLM4PPzS39DPAwFgoAVPwIhAMh8g6EQ7vWREPCb2QBUPKxBznmFgfgjsJVYUrGPB/Cz"
+}

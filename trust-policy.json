@@ -1,0 +1,21 @@
+{
+  "predicate": "https://skill-trust.dev/policy/v1",
+  "includes": [
+    "examples/rhtas-demo-plugin/skills/greeting/SKILL.md"
+  ],
+  "publishers": [
+    {
+      "name": "rhtas-github-actions",
+      "issuer": "https://token.actions.githubusercontent.com",
+      "repository": "cooktheryan/skill-trust",
+      "workflow": ".github/workflows/rhtas-ci.yml",
+      "ref_pattern": "refs/heads/main"
+    }
+  ],
+  "blocklist": {
+    "digests": [],
+    "publishers": []
+  },
+  "enforcement": "deny",
+  "require_signature": true
+}

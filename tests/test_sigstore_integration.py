@@ -10,8 +10,6 @@ Skip with: pytest -m "not integration"
 
 import pytest
 
-from skill_trust.manifest import build_manifest
-from skill_trust.models import IdentityConstraints
 from skill_trust.signer import SkillSigner
 from skill_trust.verifier import SkillVerifier
 

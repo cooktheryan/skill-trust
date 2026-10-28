@@ -6,23 +6,16 @@ Following model-transparency's testing pattern:
 - Test the full sign -> tamper -> verify cycle
 """
 
-import hashlib
 import json
 from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.hashes import SHA256
-from cryptography.hazmat.primitives.serialization import (
-    Encoding,
-    NoEncryption,
-    PrivateFormat,
-    PublicFormat,
-)
 
 from skill_trust.manifest import build_manifest, compute_root_digest
 from skill_trust.models import Manifest
-from skill_trust.signer import PREDICATE_TYPE, _build_statement
+from skill_trust.signer import _build_statement
 
 
 class TestManifestRoundTrip:
@@ -32,7 +25,7 @@ class TestManifestRoundTrip:
         """Verify manifest -> DSSE statement -> predicate extraction -> manifest."""
         manifest = build_manifest(sample_skill_path)
         statement_builder = _build_statement(manifest)
-        statement = statement_builder.build()
+        statement_builder.build()
 
         # The statement should use our predicate type
         # Extract the predicate (which is the manifest dict)

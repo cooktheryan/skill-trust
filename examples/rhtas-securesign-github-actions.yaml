@@ -1,0 +1,36 @@
+apiVersion: rhtas.redhat.com/v1
+kind: Securesign
+metadata:
+  name: skill-trust
+  labels:
+    app.kubernetes.io/name: skill-trust
+    app.kubernetes.io/part-of: trusted-artifact-signer
+spec:
+  fulcio:
+    ingress:
+      enabled: true
+    config:
+      oidcIssuers:
+        - issuer: https://token.actions.githubusercontent.com
+          clientID: sigstore
+          type: github-workflow
+    signer:
+      certificateChain:
+        organizationName: skill-trust
+  rekor:
+    ingress:
+      enabled: true
+  tsa:
+    ingress:
+      enabled: true
+    signer:
+      certificateChain:
+        intermediateCA:
+          - organizationName: skill-trust
+        leafCA:
+          organizationName: skill-trust
+        rootCA:
+          organizationName: skill-trust
+  tuf:
+    ingress:
+      enabled: true

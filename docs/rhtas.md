@@ -1,174 +1,199 @@
 # Using skill-trust with Red Hat Trusted Artifact Signer
 
-This runbook shows how to use RHTAS as the keyless signing and verification backend for
-AI skills and other project files protected by `skill-trust`.
+This runbook deploys RHTAS 1.5 on OpenShift, configures it for GitHub Actions OIDC, pins
+its TUF root, and runs `skill-trust` signing and verification in CI.
 
-## What RHTAS provides out of the box
+## What RHTAS provides
 
-RHTAS deploys and operates the Sigstore-compatible backend:
+RHTAS operates the Sigstore-compatible backend:
 
-- **Fulcio** — short-lived signing certificates bound to an OIDC identity.
-- **Rekor** and Trillian — transparency-log storage and inclusion proofs.
-- **TUF** — pinned trust metadata, including the TUF root, trusted root, and signing configuration.
-- **TSA** — optional signed timestamps.
-- **Keycloak** in the simple quickstart, or your corporate identity provider in production.
+- **Fulcio** issues short-lived certificates bound to an OIDC identity.
+- **Rekor** and Trillian provide transparency-log storage and inclusion proofs.
+- **TUF** publishes the trust root, trusted root, and signing configuration.
+- **TSA** provides optional signed timestamps.
 
-RHTAS does **not** know about AI skills, skill manifests, project file policies, or agent
-startup enforcement. `skill-trust` supplies those pieces:
+RHTAS does not provide AI-skill manifests, project file policies, publisher constraints, or
+agent startup enforcement. `skill-trust` supplies those layers.
 
-- Deterministic skill-directory manifests.
-- Per-file and per-skill bundles.
-- Signed project trust policies.
-- Publisher, issuer, repository, workflow, and ref constraints.
-- Pre-execution scanning and deny/warn/audit decisions.
+## 1. Install the RHTAS operator
 
-## Prerequisites
+Install Red Hat Trusted Artifact Signer 1.5 from Red Hat OperatorHub using the `stable`
+channel. The operator normally lives in `openshift-rhtas-operator`.
 
-- An OpenShift cluster with the RHTAS operator installed and an RHTAS instance ready.
-- Permission to read RHTAS custom resources and routes.
-- Python 3.12 or newer.
-- Network and TLS trust from your workstation or CI runner to the RHTAS routes.
-- An OIDC identity accepted by your RHTAS Fulcio configuration.
+If installing with the OpenShift CLI, create a subscription equivalent to:
 
-For an evaluation deployment, the upstream `securesign/quickstarts` simple scenario can
-create RHTAS components and a Keycloak realm:
-
-```bash
-git clone https://github.com/securesign/quickstarts.git
-cd quickstarts/openshift/simple
-make deploy-all
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhtas-operator
+  namespace: openshift-rhtas-operator
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: rhtas-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  startingCSV: rhtas-operator.v1.5.0
 ```
 
-The quickstart repository is intended for evaluation and may change between RHTAS releases.
-For production, install RHTAS through your supported Red Hat installation path and connect
-Fulcio to your approved identity provider.
-
-## 1. Discover the RHTAS endpoints
-
-Set the namespace used by your RHTAS instance. The simple quickstart uses `rhtas-simple`:
+Wait for the operator deployment:
 
 ```bash
-export RHTAS_NAMESPACE=rhtas-simple
-export TUF_URL="$(oc -n "$RHTAS_NAMESPACE" get tuf -o jsonpath='{.items[0].status.url}')"
-export FULCIO_URL="$(oc -n "$RHTAS_NAMESPACE" get fulcio -o jsonpath='{.items[0].status.url}')"
-export REKOR_URL="$(oc -n "$RHTAS_NAMESPACE" get rekor -o jsonpath='{.items[0].status.url}')"
-export TSA_URL="$(oc -n "$RHTAS_NAMESPACE" get timestampauthorities -o jsonpath='{.items[0].status.url}')"
+oc -n openshift-rhtas-operator wait \
+  --for=condition=Available \
+  deployment/rhtas-operator-controller-manager \
+  --timeout=10m
 ```
 
-The simple quickstart's Keycloak issuer is:
+Confirm the installed version:
 
 ```bash
-export OIDC_ISSUER="https://keycloak-keycloak-system.$(oc get ingress.config.openshift.io cluster -o jsonpath='{.spec.domain}')/auth/realms/trusted-artifact-signer"
+oc -n openshift-rhtas-operator get csv \
+  -l operators.coreos.com/rhtas-operator.openshift-rhtas-operator=""
 ```
 
-Use the OIDC issuer configured in your own Fulcio resource for a production deployment.
+## 2. Create a RHTAS instance for GitHub Actions
 
-## 2. Install skill-trust and pin the RHTAS TUF root
-
-From this repository:
+Create a dedicated namespace:
 
 ```bash
-python -m pip install -e .
-skill-trust --version
-curl -fsSL "$TUF_URL/root.json" -o rhtas-tuf-root.json
+oc create namespace skill-trust-rhtas
 ```
 
-Treat `rhtas-tuf-root.json` as trust material. Store it in a secure, reproducible location and
-do not regenerate it casually. The RHTAS TUF repository must publish the metadata expected by
-the Sigstore client, including `trusted_root.json` and `signing_config.v0.2.json`. Current
-RHTAS TUF repositories provide this; older deployments may need an upgrade or migration.
-
-## 3. Obtain an OIDC token
-
-For the simple quickstart's Keycloak realm, the example user is `jdoe` with password
-`secure`:
+Apply the example `Securesign` resource:
 
 ```bash
-export OIDC_TOKEN="$(curl -fsSL -X POST \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d 'username=jdoe' \
-  -d 'password=secure' \
-  -d 'grant_type=password' \
-  -d 'scope=openid' \
-  -d 'client_id=trusted-artifact-signer' \
-  "$OIDC_ISSUER/protocol/openid-connect/token" |
-  python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
+oc apply -n skill-trust-rhtas \
+  -f examples/rhtas-securesign-github-actions.yaml
 ```
 
-In production, use your approved OIDC client and authentication flow. Never put a user's
-OIDC token in source control.
+The manifest configures Fulcio to accept GitHub Actions OIDC:
 
-## 4. Smoke-test a skill plugin
+```yaml
+oidcIssuers:
+  - issuer: https://token.actions.githubusercontent.com
+    clientID: sigstore
+    type: github-workflow
+```
 
-Create a small plugin:
+Wait for all RHTAS components:
 
 ```bash
-mkdir -p demo-plugin/skills/greeting
-cat > demo-plugin/skills/greeting/SKILL.md <<'EOF'
----
-name: greeting
-description: Greet the user.
----
-
-Greet the user by name.
-EOF
+oc wait -n skill-trust-rhtas securesign/skill-trust \
+  --for=condition=Ready \
+  --timeout=10m
 ```
 
-Sign every skill in the plugin with RHTAS:
+Inspect the resulting endpoints:
 
 ```bash
-skill-trust sign demo-plugin \
-  --tuf-url "$TUF_URL" \
-  --tuf-root rhtas-tuf-root.json \
-  --identity-token "$OIDC_TOKEN"
+oc -n skill-trust-rhtas get securesign skill-trust -o wide
 ```
 
-Verify the plugin and constrain the signer:
+The status provides URLs for Fulcio, Rekor, TSA, and TUF.
+
+## 3. Pin the TUF bootstrap root
+
+Set the TUF URL from the `Securesign` status:
 
 ```bash
-skill-trust verify demo-plugin \
-  --identity jdoe@redhat.com \
-  --issuer "$OIDC_ISSUER" \
-  --tuf-url "$TUF_URL" \
-  --tuf-root rhtas-tuf-root.json
+export TUF_URL="$(oc -n skill-trust-rhtas get securesign skill-trust \
+  -o jsonpath='{.status.tuf.url}')"
 ```
 
-The bundle is written under `demo-plugin/.skill-trust/skills/`. Commit it with the plugin if
-you want consumers to verify the skill before loading it.
-
-## 5. Create a signed project policy for arbitrary files
-
-The project policy declares which files are covered and which RHTAS OIDC publishers are
-trusted. The policy itself is signed with a local anchor key; this is separate from the
-RHTAS keyless signing key.
-
-Generate a policy anchor key:
+Download and pin the bootstrap root:
 
 ```bash
-skill-trust trust keygen --key .skill-trust/policy-key.pem
+curl -fsSL "$TUF_URL/root.json" \
+  -o trust/rhtas/root.json
 ```
 
-Create a starting policy:
+In RHTAS 1.5, `root.json` is available at that direct path. The trusted-root and
+signing-config targets are content-addressed below `/targets/`; do not try to download them
+by their logical filenames. The Sigstore TUF client resolves those targets from signed TUF
+metadata automatically.
+
+Validate that the pinned root resolves the RHTAS services:
+
+```python
+import os
+from pathlib import Path
+
+from sigstore.models import ClientTrustConfig
+
+config = ClientTrustConfig.from_tuf(
+    os.environ["TUF_URL"],
+    bootstrap_root=Path("trust/rhtas/root.json"),
+)
+assert config.signing_config.get_oidc_url() == "https://token.actions.githubusercontent.com"
+```
+
+The resolved configuration also contains the RHTAS Fulcio, Rekor, and TSA URLs.
+
+## 4. Create the CI trust policy
+
+The repository contains a signed policy for a small demo skill:
+
+- `trust-policy.json`
+- `trust-policy.json.keyed.json`
+- `trust/rhtas/policy-key.pub`
+
+The policy trusts GitHub Actions signatures only when the certificate claims match:
+
+- Issuer: `https://token.actions.githubusercontent.com`
+- Repository: `cooktheryan/skill-trust`
+- Workflow: `.github/workflows/rhtas-ci.yml`
+- Ref: `refs/heads/main`
+
+The public anchor key is committed. The corresponding private key is not committed and
+must be stored securely. To rotate the anchor, generate a new key, update the policy, sign
+it with the new key, and replace the public anchor.
+
+## 5. Run RHTAS CI validation
+
+The repository includes `.github/workflows/rhtas-ci.yml`. It:
+
+1. Installs `skill-trust`.
+2. Signs `examples/rhtas-demo-plugin` with RHTAS keyless signing.
+3. Signs the policy-covered `SKILL.md` file.
+4. Verifies the skill through `verify_before_load()` and the RHTAS TUF root.
+5. Verifies the policy-covered file through `trust verify`.
+
+Configure the repository variable:
+
+```bash
+gh variable set RHTAS_TUF_URL \
+  --repo cooktheryan/skill-trust \
+  --body "$TUF_URL"
+```
+
+Run the validation manually:
+
+```bash
+gh workflow run rhtas-ci.yml \
+  --repo cooktheryan/skill-trust \
+  --ref main
+```
+
+Watch the result:
+
+```bash
+gh run watch \
+  --repo cooktheryan/skill-trust \
+  $(gh run list --repo cooktheryan/skill-trust \
+    --workflow rhtas-ci.yml \
+    --limit 1 \
+    --json databaseId \
+    --jq '.[0].databaseId')
+```
+
+## 6. Use RHTAS for your own files
+
+Create or edit a policy with a GitHub publisher:
 
 ```bash
 skill-trust trust init \
-  --include 'CLAUDE.md' \
-  --include 'SKILL.md' \
-  --include 'src/**/*.py' \
-  --key .skill-trust/policy-key.pem \
-  --publisher-name rhtas-keycloak \
-  --oidc-issuer "$OIDC_ISSUER" \
-  --identity jdoe@redhat.com
-```
-
-Replace `--identity jdoe@redhat.com` with the identity accepted by your RHTAS Fulcio
-configuration. Omit it when the issuer alone should define the trusted publisher.
-
-For GitHub Actions, constrain the exact repository, workflow, and ref that may sign:
-
-```bash
-skill-trust trust init \
-  --include 'CLAUDE.md' \
   --include 'SKILL.md' \
   --include 'src/**/*.py' \
   --key .skill-trust/policy-key.pem \
@@ -179,86 +204,70 @@ skill-trust trust init \
   --ref-pattern refs/heads/main
 ```
 
-Sign the policy with the local anchor key:
-
-```bash
-skill-trust trust sign-policy \
-  --policy trust-policy.json \
-  --key .skill-trust/policy-key.pem
-```
-
-## 6. Sign policy-covered files with RHTAS
-
-Sign every file selected by the policy:
+Sign and verify policy-covered files from CI:
 
 ```bash
 skill-trust trust sign --all \
   --policy trust-policy.json \
   --tuf-url "$TUF_URL" \
-  --tuf-root rhtas-tuf-root.json \
-  --identity-token "$OIDC_TOKEN"
-```
+  --tuf-root trust/rhtas/root.json
 
-Each file receives a `<filename>.bundle` sidecar. Commit the signed files, their bundles,
-`trust-policy.json`, and `trust-policy.json.keyed.json`. Do not commit the private policy key.
-
-## 7. Verify before an agent starts
-
-Verify every policy-covered file against the signed policy and RHTAS trust root:
-
-```bash
 skill-trust trust verify --all \
   --policy trust-policy.json \
-  --trust-anchor .skill-trust/policy-key.pem.pub \
+  --trust-anchor trust/rhtas/policy-key.pub \
   --tuf-url "$TUF_URL" \
-  --tuf-root rhtas-tuf-root.json
+  --tuf-root trust/rhtas/root.json
 ```
 
-Use the same command as the pre-execution gate in your agent wrapper, CI job, or launcher.
-A non-zero exit code means the trust scan failed and the agent should not start.
-
-To list covered files and their current status:
-
-```bash
-skill-trust trust list \
-  --policy trust-policy.json \
-  --trust-anchor .skill-trust/policy-key.pem.pub
-```
-
-## 8. Use RHTAS from CI
-
-A CI runner can use ambient OIDC credentials only if your RHTAS Fulcio configuration accepts
-that CI issuer and claim format. With ambient credentials configured, omit `--identity-token`:
-
-```bash
-skill-trust trust sign --all \
-  --policy trust-policy.json \
-  --tuf-url "$TUF_URL" \
-  --tuf-root rhtas-tuf-root.json
-```
-
-For GitHub Actions, request the OIDC token with:
+GitHub Actions supplies the OIDC token automatically when the job has:
 
 ```yaml
 permissions:
-  id-token: write
   contents: read
+  id-token: write
 ```
 
-Then constrain the policy publisher to the exact repository, workflow, and ref that should be
-allowed to sign.
+## 7. Use a human OIDC issuer
+
+The example deployment accepts GitHub Actions only. To sign interactively as a person,
+configure Fulcio with an email issuer such as Keycloak or your corporate identity provider,
+then pass the token explicitly:
+
+```bash
+skill-trust sign path/to/plugin \
+  --tuf-url "$TUF_URL" \
+  --tuf-root trust/rhtas/root.json \
+  --identity-token "$OIDC_TOKEN"
+```
+
+Use the same TUF URL and root for verification, and constrain the accepted identity and
+issuer in the trust policy.
 
 ## Troubleshooting
 
-- **`No valid Rekor transparency log found in signing config`** — the RHTAS TUF repository
-  does not publish `signing_config.v0.2.json`. Upgrade RHTAS or publish the signing
-  configuration with its supported tooling.
-- **TLS failure** — import the cluster CA into the runner's trust store or use certificates
-  issued by a CA already trusted by the runner.
-- **Identity verification failure** — compare the bundle identity and issuer with
-  `skill-trust inspect`. The policy must use the exact identity and issuer encoded in the
-  Fulcio certificate.
-- **`--staging` and `--tuf-url` conflict** — custom RHTAS trust and public Sigstore staging
-  are intentionally mutually exclusive.
-- **Missing bundle** — every file matching `includes` must have a `<filename>.bundle`. The
-  scanner intentionally ignores `.gitignore`, so ignored files cannot bypass the policy.
+### Operator is installed but no endpoints exist
+
+The operator is only the controller. Create a `Securesign` instance and wait for its
+`Ready` condition.
+
+### `trusted_root.json` returns 404
+
+This is expected on RHTAS 1.5 when requesting the logical filename directly. The target is
+published with a content-addressed filename below `/targets/`. Let the Sigstore TUF client
+resolve it.
+
+### GitHub OIDC is rejected
+
+Confirm that Fulcio contains the GitHub issuer, the workflow has `id-token: write`, and the
+trust policy matches the exact repository, workflow path, and ref.
+
+### Verification cannot reach RHTAS
+
+Confirm network and TLS trust from the runner to the RHTAS routes. For private routes,
+configure runner network access or expose the services through an approved ingress.
+
+### Older RHTAS deployments
+
+Older deployments may not publish a signing configuration compatible with current Python
+Sigstore clients. Upgrade RHTAS or publish the required TUF targets with supported RHTAS
+tooling.
