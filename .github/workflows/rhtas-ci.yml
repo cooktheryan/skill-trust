@@ -35,13 +35,6 @@ jobs:
             --tuf-url "$TUF_URL" \
             --tuf-root trust/rhtas/root.json
 
-      - name: Sign policy-covered file with RHTAS
-        run: |
-          skill-trust trust sign --all \
-            --policy trust-policy.json \
-            --tuf-url "$TUF_URL" \
-            --tuf-root trust/rhtas/root.json
-
       - name: Verify demo skill against RHTAS trust policy
         run: |
           python - <<'PY'
@@ -79,6 +72,13 @@ jobs:
               raise SystemExit(f"RHTAS skill verification failed: {result.reason}")
           print(f"RHTAS skill verified: {result.identity}")
           PY
+
+      - name: Sign policy-covered file with RHTAS
+        run: |
+          skill-trust trust sign --all \
+            --policy trust-policy.json \
+            --tuf-url "$TUF_URL" \
+            --tuf-root trust/rhtas/root.json
 
       - name: Verify policy-covered file with RHTAS
         run: |

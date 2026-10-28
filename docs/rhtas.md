@@ -157,9 +157,13 @@ The repository includes `.github/workflows/rhtas-ci.yml`. It:
 
 1. Installs `skill-trust`.
 2. Signs `examples/rhtas-demo-plugin` with RHTAS keyless signing.
-3. Signs the policy-covered `SKILL.md` file.
-4. Verifies the skill through `verify_before_load()` and the RHTAS TUF root.
+3. Verifies the skill through `verify_before_load()` and the RHTAS TUF root.
+4. Signs the policy-covered `SKILL.md` file.
 5. Verifies the policy-covered file through `trust verify`.
+
+The order matters: adding a `<filename>.bundle` sidecar inside a skill directory after the
+skill manifest is signed changes the skill's file set. Verify the skill before generating
+file sidecars, or keep policy-covered files outside signed skill directories.
 
 Configure the repository variable:
 
