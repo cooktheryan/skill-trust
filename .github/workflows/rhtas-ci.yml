@@ -40,6 +40,7 @@ jobs:
         with:
           name: rhtas-signed-demo-skill
           path: examples/rhtas-demo-plugin
+          include-hidden-files: true
           retention-days: 7
           if-no-files-found: error
 
