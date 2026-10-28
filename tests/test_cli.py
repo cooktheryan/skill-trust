@@ -12,3 +12,10 @@ def test_cli_registers_commands() -> None:
     assert "inspect" in result.output
     assert "sign" in result.output
     assert "verify" in result.output
+
+
+def test_trust_sign_accepts_rhtas_identity_token() -> None:
+    result = CliRunner().invoke(cli, ["trust", "sign", "--help"])
+
+    assert result.exit_code == 0
+    assert "--identity-token" in result.output

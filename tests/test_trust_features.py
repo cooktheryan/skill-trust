@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from click.testing import CliRunner
+import pytest
 
 from skill_trust.cli import cli
 from skill_trust.keyed import (
@@ -36,6 +37,13 @@ def test_keyed_skill_round_trip(tmp_skill: Path, tmp_path: Path) -> None:
     assert result.identity == f"key:{trusted_key_id}"
     assert result.claims["key_id"] == trusted_key_id
     assert result.public_key == encode_public_key(load_public_key(public_key))
+
+
+def test_keyed_signer_rejects_identity_token(tmp_path: Path) -> None:
+    private_key, _ = _make_key(tmp_path)
+
+    with pytest.raises(ValueError, match="cannot use an OIDC identity token"):
+        SkillSigner(private_key=private_key, identity_token="oidc-token")
 
 
 def test_keyed_file_round_trip(tmp_path: Path) -> None:

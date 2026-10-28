@@ -73,6 +73,8 @@ Output:
 
 ## Using Red Hat Trusted Artifact Signer (RHTAS)
 
+For a complete deployment and usage walkthrough, see [Using skill-trust with RHTAS](docs/rhtas.md).
+
 RHTAS provides a Sigstore-compatible set of Fulcio, Rekor, OIDC, and TUF services.
 skill-trust uses the RHTAS TUF repository as its trust configuration, so the same
 certificate authorities and transparency logs used by your RHTAS deployment also
@@ -83,7 +85,7 @@ Sign skills with a custom RHTAS trust configuration:
 ```bash
 skill-trust sign path/to/my-plugin/ \
   --tuf-url https://rhtas.example.com/tuf \
-  --tuf-root path/to/trusted_root.json
+  --tuf-root path/to/rhtas-tuf-root.json
 ```
 
 Verify them with the same trust configuration and explicit identity constraints:
@@ -93,12 +95,12 @@ skill-trust verify path/to/my-plugin/ \
   --identity developer@example.com \
   --issuer https://your-rhtas-oidc-issuer \
   --tuf-url https://rhtas.example.com/tuf \
-  --tuf-root path/to/trusted_root.json
+  --tuf-root path/to/rhtas-tuf-root.json
 ```
 
 Notes:
 
-- Obtain `trusted_root.json` from your RHTAS administrator and treat it as sensitive trust material.
+- Download the RHTAS TUF `root.json` metadata and treat it as sensitive trust material.
 - The `--tuf-root` option pins the initial TUF trust root and is recommended for reproducible deployments.
 - `--tuf-url` and `--staging` are mutually exclusive; custom trust must not accidentally fall back to public Sigstore trust.
 - The gate API accepts the same `tuf_url` and `tuf_root` parameters for loaders that enforce skills at runtime.

@@ -56,6 +56,8 @@ class SkillSigner:
     ) -> None:
         if private_key and (staging or tuf_url):
             raise ValueError("Keyed signing cannot use Sigstore keyless infrastructure")
+        if private_key and identity_token:
+            raise ValueError("Keyed signing cannot use an OIDC identity token")
 
         self._private_key = load_private_key(private_key) if private_key else None
         self._keyless = private_key is None

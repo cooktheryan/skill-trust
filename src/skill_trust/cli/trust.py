@@ -85,6 +85,7 @@ def sign_policy(policy: Path, key: Path, output: Path | None) -> None:
 @click.argument("paths", type=click.Path(path_type=Path), nargs=-1)
 @click.option("--all", "sign_all", is_flag=True)
 @click.option("--key", type=click.Path(exists=True, path_type=Path), default=None)
+@click.option("--identity-token", type=str, default=None)
 @click.option("--policy", type=click.Path(exists=True, path_type=Path), default=Path("trust-policy.json"))
 @click.option("--staging", is_flag=True)
 @click.option("--tuf-url", type=str, default=None)
@@ -93,6 +94,7 @@ def sign(
     paths: tuple[Path, ...],
     sign_all: bool,
     key: Path | None,
+    identity_token: str | None,
     policy: Path,
     staging: bool,
     tuf_url: str | None,
@@ -108,6 +110,7 @@ def sign(
         raise click.ClickException("No files matched the policy")
 
     signer = SkillSigner(
+        identity_token=identity_token,
         staging=staging,
         tuf_url=tuf_url,
         tuf_root=tuf_root,
