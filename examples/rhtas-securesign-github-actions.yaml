@@ -12,6 +12,7 @@ spec:
     config:
       oidcIssuers:
         - issuer: https://token.actions.githubusercontent.com
+          issuerURL: https://token.actions.githubusercontent.com
           clientID: sigstore
           type: github-workflow
     signer:

@@ -73,6 +73,7 @@ The manifest configures Fulcio to accept GitHub Actions OIDC:
 ```yaml
 oidcIssuers:
   - issuer: https://token.actions.githubusercontent.com
+    issuerURL: https://token.actions.githubusercontent.com
     clientID: sigstore
     type: github-workflow
 ```
@@ -258,8 +259,9 @@ resolve it.
 
 ### GitHub OIDC is rejected
 
-Confirm that Fulcio contains the GitHub issuer, the workflow has `id-token: write`, and the
-trust policy matches the exact repository, workflow path, and ref.
+Confirm that Fulcio contains both the GitHub `issuer` and matching `issuerURL`, the
+workflow has `id-token: write`, and the trust policy matches the exact repository,
+workflow path, and ref.
 
 ### Verification cannot reach RHTAS
 
